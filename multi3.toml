@@ -2,9 +2,7 @@ host = "0.0.0.0:8080"
 tui = true            # press 'q' to quit in tui
 # ipv6_first = true   # uncomment
 
-[pool]
-v4 = ["0.0.0.0"]
-v6 = ["::"]
+pool = ["0.0.0.0", "::"]
 
 [timeout]
 connect = 5000 #ms

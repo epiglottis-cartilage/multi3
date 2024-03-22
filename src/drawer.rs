@@ -11,7 +11,7 @@ use super::event::Event;
 
 pub const FRAME_INTERVAL: Duration = Duration::from_millis(200);
 const WIDGETS_TIME_LEN: usize = 5;
-const WIDGETS_SPEED_LEN: usize = 8;
+const WIDGETS_SPEED_LEN: usize = 10;
 const KEEP_AFTER_DONE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy)]
@@ -61,7 +61,7 @@ impl Content {
         let mut res = Vec::with_capacity(6);
         res.push(
             Span::raw(format!(
-                "{:>width$}s",
+                "{:>width$}",
                 self.start.elapsed().as_secs(),
                 width = WIDGETS_TIME_LEN
             ))
@@ -70,7 +70,7 @@ impl Content {
         res.push(
             //🔼🔽
             Span::raw(format!(
-                "{:>width$.1}KB {:>width$.1}KB",
+                "{:>width$.1} {:>width$.1}",
                 self.upload as f32 / 1024f32,
                 self.download as f32 / 1024f32,
                 width = WIDGETS_SPEED_LEN
@@ -84,7 +84,7 @@ impl Content {
         // res.push(Span::raw(self.local.to_string()).light_blue());
         if let Some(ip) = &self.bind {
             res.push(Span::raw(ip.to_string()).cyan());
-            res.push(Span::raw("<>"));
+            res.push(Span::raw(" "));
         }
         if let Some(uri) = &self.uri {
             res.push(Span::raw(uri).blue().bold());
@@ -105,15 +105,15 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
 
     let mut jobs = VecDeque::new();
     let title: Line = vec![
-        Span::raw(format!("{:>width$}", "time", width = WIDGETS_TIME_LEN + 1)).cyan(),
+        Span::raw(format!("{:>width$}", "time", width = WIDGETS_TIME_LEN)).cyan(),
         Span::raw(format!(
             "{:>width$} {:>width$}",
-            "🔼",
-            "🔽",
-            width = WIDGETS_SPEED_LEN + 1
+            "⇧KB",
+            "⇩KB",
+            width = WIDGETS_SPEED_LEN
         ))
         .light_magenta(),
-        Span::raw("🔰local<>URI").blue().bold(),
+        Span::raw("🔰").blue().bold(),
     ]
     .into();
 

@@ -85,15 +85,10 @@ mod toml_file {
     #[derive(Deserialize)]
     pub struct Config {
         host: SocketAddr,
-        pool: ConfigPool,
+        pool: Vec<std::net::IpAddr>,
         timeout: ConfigTimeout,
         tui: bool,
         ipv6_first: Option<bool>,
-    }
-    #[derive(Deserialize)]
-    struct ConfigPool {
-        v4: Vec<std::net::Ipv4Addr>,
-        v6: Vec<std::net::Ipv6Addr>,
     }
 
     #[derive(Deserialize)]
@@ -103,14 +98,22 @@ mod toml_file {
     }
     impl From<Config> for (super::HostConfig, super::HandlerConfig) {
         fn from(val: Config) -> Self {
+            let mut v4 = Vec::new();
+            let mut v6 = Vec::new();
+            for ip in val.pool {
+                match ip {
+                    std::net::IpAddr::V4(x) => v4.push(x),
+                    std::net::IpAddr::V6(x) => v6.push(x),
+                }
+            }
             (
                 super::HostConfig {
                     host: val.host,
                     tui: val.tui,
                 },
                 super::HandlerConfig::new(
-                    val.pool.v4,
-                    val.pool.v6,
+                    v4,
+                    v6,
                     Duration::from_millis(val.timeout.connect),
                     Duration::from_secs(val.timeout.io),
                     val.ipv6_first,
