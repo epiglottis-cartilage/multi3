@@ -18,3 +18,5 @@ Use `cargo run --release` to compile and run the program.
 Or you can start executable at the same directory with `multi3.toml`.
 
 Don't forget manually setup system proxy.
+
+Finally don't forget manually setup system proxy server.

@@ -1,9 +1,10 @@
 host = "0.0.0.0:8080"
 tui = true            # press 'q' to quit in tui
-# ipv6_first = true   # uncomment
+# ipv6_first = true   # uncomment to enable, false => ipc4 first
 
 pool = ["0.0.0.0", "::"]
 
 [timeout]
 connect = 5000 #ms
-io = 15        #s
+retry = 10000  #ms
+io = 15        #s    # uncomment to enable

@@ -4,7 +4,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use ratatui::{prelude::*, widgets::Paragraph};
-use std::{collections::VecDeque, io::stdout, time::Instant};
+use std::{io::stdout, time::Instant};
 use std::{net::IpAddr, sync::mpsc, time::Duration};
 
 use super::event::Event;
@@ -33,7 +33,7 @@ impl From<State> for &str {
 }
 
 struct Content {
-    start: Instant,
+    time_start: Instant,
     local: IpAddr,
     bind: Option<IpAddr>,
     remote: Option<IpAddr>,
@@ -46,7 +46,7 @@ struct Content {
 impl Content {
     fn new(local: IpAddr) -> Self {
         Self {
-            start: Instant::now(),
+            time_start: Instant::now(),
             local,
             bind: None,
             remote: None,
@@ -62,7 +62,7 @@ impl Content {
         res.push(
             Span::raw(format!(
                 "{:>width$}",
-                self.start.elapsed().as_secs(),
+                self.time_start.elapsed().as_secs(),
                 width = WIDGETS_TIME_LEN
             ))
             .cyan(),
@@ -103,7 +103,7 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
 
-    let mut jobs = VecDeque::new();
+    let mut jobs = Vec::new();
     let title: Line = vec![
         Span::raw(format!("{:>width$}", "time", width = WIDGETS_TIME_LEN)).cyan(),
         Span::raw(format!(
@@ -124,7 +124,7 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
     for (id, event) in recv {
         if id != 0 {
             if let Event::Received(ip) = event {
-                jobs.push_back((id, Content::new(ip)));
+                jobs.push((id, Content::new(ip)));
             } else {
                 let index = match jobs.binary_search_by_key(&id, |x| x.0) {
                     Ok(x) => x,
@@ -162,7 +162,7 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
                 };
             }
         } else {
-            jobs.retain(|(_, content)| match content.state {
+            jobs.retain(|(_id, content)| match content.state {
                 State::Done(t) | State::Error(t) => t.elapsed() < KEEP_AFTER_DONE,
                 _ => true,
             });

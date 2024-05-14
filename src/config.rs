@@ -10,11 +10,13 @@ pub struct HostConfig {
     pub host: SocketAddr,
     pub tui: bool,
 }
+#[derive(Debug)]
 pub struct HandlerConfig {
     ip4: Mutex<IpPool<Ipv4Addr>>,
     ip6: Mutex<IpPool<Ipv6Addr>>,
     pub connect_ttl: Duration,
-    pub io_ttl: Duration,
+    pub retry_ttl: Duration,
+    pub io_ttl: Option<Duration>,
     pub ipv6_first: Option<bool>,
 }
 impl HandlerConfig {
@@ -22,13 +24,15 @@ impl HandlerConfig {
         v4: Vec<Ipv4Addr>,
         v6: Vec<Ipv6Addr>,
         connect_ttl: Duration,
-        io_ttl: Duration,
+        retry_ttl: Duration,
+        io_ttl: Option<Duration>,
         ipv6_first: Option<bool>,
     ) -> Self {
         Self {
             ip4: Mutex::new(IpPool::new(v4, Ipv4Addr::UNSPECIFIED)),
             ip6: Mutex::new(IpPool::new(v6, Ipv6Addr::UNSPECIFIED)),
             connect_ttl,
+            retry_ttl,
             io_ttl,
             ipv6_first,
         }
@@ -41,6 +45,7 @@ impl HandlerConfig {
     }
 }
 
+#[derive(Debug)]
 struct IpPool<T> {
     val: Vec<T>,
     index: usize,
@@ -94,7 +99,8 @@ mod toml_file {
     #[derive(Deserialize)]
     struct ConfigTimeout {
         connect: u64,
-        io: u64,
+        retry: u64,
+        io: Option<u64>,
     }
     impl From<Config> for (super::HostConfig, super::HandlerConfig) {
         fn from(val: Config) -> Self {
@@ -115,7 +121,8 @@ mod toml_file {
                     v4,
                     v6,
                     Duration::from_millis(val.timeout.connect),
-                    Duration::from_secs(val.timeout.io),
+                    Duration::from_millis(val.timeout.retry),
+                    val.timeout.io.map(Duration::from_secs),
                     val.ipv6_first,
                 ),
             )
