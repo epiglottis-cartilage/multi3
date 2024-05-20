@@ -1,6 +1,5 @@
 mod config;
 mod handle;
-// mod logger;
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let (host, cfg) = config::read_config("multi3.toml").unwrap();
@@ -13,5 +12,4 @@ async fn main() -> std::io::Result<()> {
         let cfg = &*cfg;
         tokio::spawn(async move { handle::handle(stream, cfg).await });
     }
-    // println!("Shutting down");
 }
