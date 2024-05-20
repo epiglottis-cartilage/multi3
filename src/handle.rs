@@ -1,89 +1,86 @@
 use crate::config;
-use crate::event::Event;
-use anyhow::Result;
-use std::{
-    io::{self, prelude::*},
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
-    sync::{mpsc, Arc},
-    thread,
-};
 
-const BUFFER_SIZE: usize = 40960;
-const HTTPS_HEADER: &str = "CONNECT";
+use std::net::SocketAddr;
+use std::num::NonZeroU16;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{lookup_host, TcpSocket, TcpStream};
+use tokio::time::timeout;
 
-pub fn handle(
-    id: usize,
-    local: TcpStream,
-    config: Arc<config::HandlerConfig>,
-    reporter: &mpsc::Sender<(usize, Event)>,
-) {
-    match inner_handle(id, local, config, reporter) {
-        Err(e) => {
-            let _ = reporter.send((id, Event::Error(e.to_string().into())));
+pub async fn handle(mut local: TcpStream, config: &config::HandlerConfig) {
+    let error_code = match handle_inner(&mut local, config).await {
+        Ok(code) => code,
+        Err(_e) => {
+            // println!("Inner error: {e}");
+            NonZeroU16::new(500)
         }
-        Ok(()) => {}
+    };
+
+    if let Some(code) = error_code {
+        let _ = local
+            .write_all(format!("HTTP/1.1 {} {}\r\n\r\n", code, "Fucked").as_bytes())
+            .await;
     }
 }
 
-fn inner_handle(
-    id: usize,
-    mut local: TcpStream,
-    config: Arc<config::HandlerConfig>,
-    reporter: &mpsc::Sender<(usize, Event)>,
-) -> Result<()> {
-    reporter.send((id, Event::Received(local.peer_addr()?.ip())))?;
-    local.set_read_timeout(config.io_ttl)?;
-    local.set_write_timeout(config.io_ttl)?;
-
-    let is_https;
-
+async fn handle_inner(
+    local: &mut TcpStream,
+    config: &config::HandlerConfig,
+) -> std::io::Result<Option<NonZeroU16>> {
+    let time_start = std::time::Instant::now();
+    let is_tls;
     let uri = {
+        // This block will get the URI
+        // And also consume "CONNECT" from https
+
         #[allow(invalid_value)]
-        let mut buffer =
-            unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
-        let n = local.peek(&mut buffer)?;
+        let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; 10240]>::uninit().assume_init() };
+
+        let n = local.peek(&mut buffer).await?;
         let request = String::from_utf8_lossy(&buffer[..n]);
         let mut request_split = request.split_ascii_whitespace();
 
-        let head = request_split.next();
+        is_tls = request_split
+            .next()
+            .is_some_and(|head| head.eq_ignore_ascii_case("CONNECT"));
+
         let uri = request_split
             .skip_while(|x| !x.eq_ignore_ascii_case("Host:"))
             .nth(1);
-        let mut uri = match uri {
-            None => {
-                reporter.send((id, Event::Error(format!("No host in {}", request).into())))?;
-                local.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")?;
 
-                return Ok(());
-            }
+        let mut uri = match uri {
             Some(x) => x,
+            None => {
+                println!(
+                    "Host not found from {}=>\n[{}]",
+                    local.local_addr()?,
+                    String::from_utf8_lossy(&buffer[..n])
+                );
+                return Ok(NonZeroU16::new(400));
+            }
         }
         .to_owned();
 
         if (uri.starts_with('[') && uri.ends_with(']')) || (!uri.contains(':')) {
             uri += ":80";
-        }
+        };
 
-        if head.unwrap().eq_ignore_ascii_case(HTTPS_HEADER) {
-            // consume the CONNECT package of https request.
-            let _ = local.read(&mut buffer)?;
-            is_https = true;
-        } else {
-            is_https = false;
+        if is_tls {
+            let _ = local.read(&mut buffer).await?;
         }
 
         uri
     };
 
-    reporter.send((id, Event::Resolved(uri.clone())))?;
+    let mut remote = None;
 
-    let remote = {
-        let hosts = match uri.to_socket_addrs() {
+    {
+        // This block will connect to URI
+
+        let hosts = match lookup_host(&uri).await {
             Ok(x) => x,
             Err(e) => {
-                reporter.send((id, Event::Error(format!("DNS fail:{}", e).into())))?;
-                local.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n")?;
-                return Ok(());
+                println!("{uri} cannot resolve: {e}");
+                return Ok(NonZeroU16::new(404));
             }
         };
         let hosts: Vec<_> = match config.ipv6_first {
@@ -103,147 +100,65 @@ fn inner_handle(
                 .collect()
             }
         };
-        let time_start = std::time::Instant::now();
-        let mut remote = None;
+
         for host in hosts {
-            use socket2::{Domain, Protocol, Socket, Type};
             let local_socket: SocketAddr;
             let builder;
             match host {
                 SocketAddr::V4(_) => {
                     local_socket = (config.next_ip4(), 0).into();
-                    builder = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+                    builder = TcpSocket::new_v4()?;
                 }
                 SocketAddr::V6(_) => {
                     local_socket = (config.next_ip6(), 0).into();
-                    builder = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+                    builder = TcpSocket::new_v6()?;
                 }
             };
 
-            if builder.bind(&local_socket.into()).is_err() {
-                reporter.send((id, Event::Retry()))?;
+            if builder.bind(local_socket).is_err() {
+                println!("{} is not bindable", local_socket.ip());
                 continue;
             }
-
-            match builder.connect_timeout(&host.into(), config.connect_ttl) {
-                Ok(()) => {
-                    remote = Some(builder);
-                    break;
-                }
-                Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                    if time_start.elapsed() > config.retry_ttl {
-                        reporter.send((id, Event::Error("Timeout".into())))?;
-                        local.write_all(b"HTTP/1.1 504 Gateway Time-out\r\n\r\n")?;
-                        return Ok(());
-                    } else {
-                        reporter.send((id, Event::Retry()))?;
+            match timeout(config.connect_ttl, builder.connect(host)).await {
+                Ok(res) => match res {
+                    Ok(stream) => {
+                        remote = Some(stream);
+                        break;
                     }
-                }
+                    Err(e) => {
+                        println!("{uri}({host}): {e}");
+                        continue;
+                    }
+                },
                 Err(_) => {
-                    reporter.send((id, Event::Retry()))?;
+                    println!("{uri}({host}): Timeout when connect");
+                    return Ok(NonZeroU16::new(504));
                 }
             }
         }
-        match remote {
-            None => {
-                reporter.send((id, Event::Error("Fail to connect".into())))?;
-                local.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")?;
-                return Ok(());
+    }
+    let mut remote = match remote {
+        None => return Ok(NonZeroU16::new(500)),
+        Some(remote) => {
+            if is_tls {
+                local.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await?;
             }
-            Some(x) => x,
+            remote
         }
     };
+    println!(
+        "{}<->{} established in {}ms",
+        remote.local_addr()?.ip(),
+        uri,
+        time_start.elapsed().as_millis(),
+    );
+    let (_up, _down) = tokio::io::copy_bidirectional(local, &mut remote).await?;
+    println!(
+        "{}<->{} end in {}s.",
+        remote.local_addr()?.ip(),
+        uri,
+        time_start.elapsed().as_secs(),
+    );
 
-    reporter.send((
-        id,
-        Event::Connected(
-            remote.local_addr().unwrap().as_socket().unwrap().ip(),
-            remote.peer_addr().unwrap().as_socket().unwrap().ip(),
-        ),
-    ))?;
-
-    if is_https {
-        // answer to CONNECT
-        local.write_all(b"HTTP/1.1 200 OK\r\n\r\n")?;
-    }
-
-    remote.set_read_timeout(config.io_ttl)?;
-    remote.set_write_timeout(config.io_ttl)?;
-
-    {
-        let reporter_up = reporter.clone();
-        let local_ = local.try_clone()?;
-        let remote_ = remote.try_clone()?;
-        let up = thread::spawn(move || copy_up(id, local_, remote_, reporter_up));
-
-        let reporter_down = reporter.clone();
-        let down = thread::spawn(move || copy_down(id, remote, local, reporter_down));
-
-        match up.join().and(down.join()).unwrap() {
-            Ok(()) => reporter.send((id, Event::Done()))?,
-            Err(e) => return Err(e),
-        };
-    }
-    Ok(())
-}
-fn copy_up(
-    id: usize,
-    mut from: TcpStream,
-    mut to: socket2::Socket,
-    reporter: mpsc::Sender<(usize, Event)>,
-) -> Result<()> {
-    #[allow(invalid_value)]
-    let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
-    loop {
-        match from.read(&mut buffer) {
-            Ok(0) => {
-                return Ok(());
-            }
-            Ok(n) => {
-                reporter.send((id, Event::Upload(n)))?;
-                to.write_all(&buffer[..n])?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e)
-                if e.kind() == io::ErrorKind::TimedOut || e.kind() == io::ErrorKind::WouldBlock =>
-            {
-                // reporter.send((id, Event::Error("IO timeout".into())))?;
-                return Ok(());
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
-        }
-    }
-}
-
-fn copy_down(
-    id: usize,
-    mut from: socket2::Socket,
-    mut to: TcpStream,
-    reporter: mpsc::Sender<(usize, Event)>,
-) -> Result<()> {
-    #[allow(invalid_value)]
-    let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
-    loop {
-        match from.read(&mut buffer) {
-            Ok(0) => {
-                return Ok(());
-            }
-            Ok(n) => {
-                reporter.send((id, Event::Download(n)))?;
-                to.write_all(&buffer[..n])?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e)
-                if e.kind() == io::ErrorKind::TimedOut || e.kind() == io::ErrorKind::WouldBlock =>
-            {
-                reporter.send((id, Event::Error("IO timeout".into())))?;
-                return Ok(());
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
-        }
-    }
+    Ok(None)
 }

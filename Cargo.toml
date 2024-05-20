@@ -7,8 +7,12 @@ edition = "2021"
 
 [dependencies]
 anyhow = "*"
-socket2 = "*"
 toml = "*"
 serde = { version = "*", features = ["derive"] }
-crossterm = "*"
-ratatui = "*"
+# crossterm = "*"
+# ratatui = "*"
+tokio = { version = "*", features = ["full"] }
+clap = { version = "4.5.3", features = ["derive"] }
+
+[profile.release]
+opt-level = 's'
