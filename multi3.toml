@@ -1,10 +1,15 @@
-host = "0.0.0.0:8080"
-tui = true            # press 'q' to quit in tui
+tui = true # press 'q' to quit in tui
 # ipv6_first = true   # uncomment to enable, false => ipc4 first
-
-pool = ["0.0.0.0", "::"]
 
 [timeout]
 connect = 5000 #ms
 retry = 10000  #ms
-io = 15        #s    # uncomment to enable
+io = 15000     #ms
+
+[[routing]]
+host = ["0.0.0.0:6210"]
+pool = ['192.168.1.38']
+
+[[routing]]
+host = ["0.0.0.0:6211"]
+pool = ['192.168.1.38']

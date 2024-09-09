@@ -1,9 +1,9 @@
 use crate::config;
 use crate::event::Event;
-use anyhow::Result;
+use crate::Result;
 use std::{
     io::{self, prelude::*},
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs},
     sync::{mpsc, Arc},
     thread,
 };
@@ -14,10 +14,11 @@ const HTTPS_HEADER: &str = "CONNECT";
 pub fn handle(
     id: usize,
     local: TcpStream,
-    config: Arc<config::HandlerConfig>,
-    reporter: &mpsc::Sender<(usize, Event)>,
+    config: &config::Config,
+    pool: Arc<config::IpPool>,
+    reporter: mpsc::Sender<(usize, Event)>,
 ) {
-    match inner_handle(id, local, config, reporter) {
+    match inner_handle(id, local, config, pool, reporter.clone()) {
         Err(e) => {
             let _ = reporter.send((id, Event::Error(e.to_string().into())));
         }
@@ -28,12 +29,13 @@ pub fn handle(
 fn inner_handle(
     id: usize,
     mut local: TcpStream,
-    config: Arc<config::HandlerConfig>,
-    reporter: &mpsc::Sender<(usize, Event)>,
+    config: &config::Config,
+    pool: Arc<config::IpPool>,
+    reporter: mpsc::Sender<(usize, Event)>,
 ) -> Result<()> {
     reporter.send((id, Event::Received(local.peer_addr()?.ip())))?;
-    local.set_read_timeout(config.io_ttl)?;
-    local.set_write_timeout(config.io_ttl)?;
+    local.set_read_timeout(Some(config.io_ttl))?;
+    local.set_write_timeout(Some(config.io_ttl))?;
 
     let is_https;
 
@@ -111,11 +113,11 @@ fn inner_handle(
             let builder;
             match host {
                 SocketAddr::V4(_) => {
-                    local_socket = (config.next_ip4(), 0).into();
+                    local_socket = (pool.pool_v4.next().unwrap_or(Ipv4Addr::UNSPECIFIED), 0).into();
                     builder = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
                 }
                 SocketAddr::V6(_) => {
-                    local_socket = (config.next_ip6(), 0).into();
+                    local_socket = (pool.pool_v6.next().unwrap_or(Ipv6Addr::UNSPECIFIED), 0).into();
                     builder = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
                 }
             };
@@ -167,8 +169,8 @@ fn inner_handle(
         local.write_all(b"HTTP/1.1 200 OK\r\n\r\n")?;
     }
 
-    remote.set_read_timeout(config.io_ttl)?;
-    remote.set_write_timeout(config.io_ttl)?;
+    remote.set_read_timeout(Some(config.io_ttl))?;
+    remote.set_write_timeout(Some(config.io_ttl))?;
 
     {
         let reporter_up = reporter.clone();
