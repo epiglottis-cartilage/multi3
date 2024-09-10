@@ -264,8 +264,9 @@ pub fn drawer(recv: mpsc::Receiver<()>) -> std::io::Result<()> {
         if event::poll(FRAME_INTERVAL)? {
             if let event::Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
-                    SUMMARY.lock().unwrap().stopped = true;
-                    break;
+                    // NOT exit in this mode.
+                    // SUMMARY.lock().unwrap().stopped = true;
+                    // break;
                 }
             }
         }
