@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     if let Some(socket) = cfg.lookup {
         thread::spawn(move || summary::start_summary_server(socket));
     }
-    while tx.send((0, event::Event::Done())).is_ok() {
+    while tx.send((0, 114514, event::Event::Done())).is_ok() {
         thread::sleep(drawer::FRAME_INTERVAL);
     }
     println!("Shutting down");

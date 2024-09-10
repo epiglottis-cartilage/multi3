@@ -117,9 +117,18 @@ impl Summary {
             stopped: false,
         }
     }
-    pub fn update(&mut self, id: usize, event: Event) {
+    pub fn update(&mut self, id: usize, group: i32, event: Event) {
+        match event {
+            Event::Upload(n) => {
+                self.bit_counter.entry(group).or_default().0 += n as u64;
+            }
+            Event::Download(n) => {
+                self.bit_counter.entry(group).or_default().1 += n as u64;
+            }
+            _ => {}
+        }
         if id != 0 {
-            if let Event::Received(group, ip) = event {
+            if let Event::Received(ip) = event {
                 self.jobs
                     .as_mut()
                     .unwrap()
@@ -144,11 +153,9 @@ impl Summary {
                     }
                     Event::Upload(n) => {
                         content.upload += n;
-                        self.bit_counter.entry(content.group).or_default().0 += n as u64;
                     }
                     Event::Download(n) => {
                         content.download += n;
-                        self.bit_counter.entry(content.group).or_default().1 += n as u64;
                     }
                     Event::Retry() => {
                         content.addon.push('🔁');
@@ -188,11 +195,11 @@ impl Summary {
 
 pub static SUMMARY: LazyLock<Mutex<Summary>> = LazyLock::new(|| Mutex::new(Summary::new()));
 
-pub fn init(recv: mpsc::Receiver<(usize, Event)>, tui: bool) -> std::io::Result<()> {
+pub fn init(recv: mpsc::Receiver<(usize, i32, Event)>, tui: bool) -> std::io::Result<()> {
     thread::spawn(|| {
-        for (id, event) in recv {
+        for (id, group, event) in recv {
             let mut summary = SUMMARY.lock().unwrap();
-            summary.update(id, event);
+            summary.update(id, group, event);
             if summary.stopped {
                 break;
             }

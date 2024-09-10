@@ -17,11 +17,11 @@ pub fn handle(
     local: TcpStream,
     config: &config::Config,
     pool: Arc<config::IpPool>,
-    reporter: mpsc::Sender<(usize, Event)>,
+    reporter: mpsc::Sender<(usize, i32, Event)>,
 ) {
     match inner_handle(id, group, local, config, pool, reporter.clone()) {
         Err(e) => {
-            let _ = reporter.send((id, Event::Error(e.to_string().into())));
+            let _ = reporter.send((id, group, Event::Error(e.to_string().into())));
         }
         Ok(()) => {}
     }
@@ -33,9 +33,9 @@ fn inner_handle(
     mut local: TcpStream,
     config: &config::Config,
     pool: Arc<config::IpPool>,
-    reporter: mpsc::Sender<(usize, Event)>,
+    reporter: mpsc::Sender<(usize, i32, Event)>,
 ) -> Result<()> {
-    reporter.send((id, Event::Received(group, local.peer_addr()?.ip())))?;
+    reporter.send((id, group, Event::Received(local.peer_addr()?.ip())))?;
     local.set_read_timeout(Some(config.io_ttl))?;
     local.set_write_timeout(Some(config.io_ttl))?;
 
@@ -55,7 +55,11 @@ fn inner_handle(
             .nth(1);
         let mut uri = match uri {
             None => {
-                reporter.send((id, Event::Error(format!("No host in {}", request).into())))?;
+                reporter.send((
+                    id,
+                    group,
+                    Event::Error(format!("No host in {}", request).into()),
+                ))?;
                 local.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")?;
 
                 return Ok(());
@@ -79,13 +83,13 @@ fn inner_handle(
         uri
     };
 
-    reporter.send((id, Event::Resolved(uri.clone())))?;
+    reporter.send((id, group, Event::Resolved(uri.clone())))?;
 
     let remote = {
         let hosts = match uri.to_socket_addrs() {
             Ok(x) => x,
             Err(e) => {
-                reporter.send((id, Event::Error(format!("DNS fail:{}", e).into())))?;
+                reporter.send((id, group, Event::Error(format!("DNS fail:{}", e).into())))?;
                 local.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n")?;
                 return Ok(());
             }
@@ -125,7 +129,7 @@ fn inner_handle(
             };
 
             if builder.bind(&local_socket.into()).is_err() {
-                reporter.send((id, Event::Retry()))?;
+                reporter.send((id, group, Event::Retry()))?;
                 continue;
             }
 
@@ -136,21 +140,21 @@ fn inner_handle(
                 }
                 Err(e) if e.kind() == io::ErrorKind::TimedOut => {
                     if time_start.elapsed() > config.retry_ttl {
-                        reporter.send((id, Event::Error("Timeout".into())))?;
+                        reporter.send((id, group, Event::Error("Timeout".into())))?;
                         local.write_all(b"HTTP/1.1 504 Gateway Time-out\r\n\r\n")?;
                         return Ok(());
                     } else {
-                        reporter.send((id, Event::Retry()))?;
+                        reporter.send((id, group, Event::Retry()))?;
                     }
                 }
                 Err(_) => {
-                    reporter.send((id, Event::Retry()))?;
+                    reporter.send((id, group, Event::Retry()))?;
                 }
             }
         }
         match remote {
             None => {
-                reporter.send((id, Event::Error("Fail to connect".into())))?;
+                reporter.send((id, group, Event::Error("Fail to connect".into())))?;
                 local.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")?;
                 return Ok(());
             }
@@ -160,6 +164,7 @@ fn inner_handle(
 
     reporter.send((
         id,
+        group,
         Event::Connected(
             remote.local_addr().unwrap().as_socket().unwrap().ip(),
             remote.peer_addr().unwrap().as_socket().unwrap().ip(),
@@ -178,13 +183,13 @@ fn inner_handle(
         let reporter_up = reporter.clone();
         let local_ = local.try_clone()?;
         let remote_ = remote.try_clone()?;
-        let up = thread::spawn(move || copy_up(id, local_, remote_, reporter_up));
+        let up = thread::spawn(move || copy_up(id, group, local_, remote_, reporter_up));
 
         let reporter_down = reporter.clone();
-        let down = thread::spawn(move || copy_down(id, remote, local, reporter_down));
+        let down = thread::spawn(move || copy_down(id, group, remote, local, reporter_down));
 
         match up.join().and(down.join()).unwrap() {
-            Ok(()) => reporter.send((id, Event::Done()))?,
+            Ok(()) => reporter.send((id, group, Event::Done()))?,
             Err(e) => return Err(e),
         };
     }
@@ -192,9 +197,10 @@ fn inner_handle(
 }
 fn copy_up(
     id: usize,
+    group: i32,
     mut from: TcpStream,
     mut to: socket2::Socket,
-    reporter: mpsc::Sender<(usize, Event)>,
+    reporter: mpsc::Sender<(usize, i32, Event)>,
 ) -> Result<()> {
     #[allow(invalid_value)]
     let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
@@ -204,7 +210,7 @@ fn copy_up(
                 return Ok(());
             }
             Ok(n) => {
-                reporter.send((id, Event::Upload(n)))?;
+                reporter.send((id, group, Event::Upload(n)))?;
                 to.write_all(&buffer[..n])?;
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -223,9 +229,10 @@ fn copy_up(
 
 fn copy_down(
     id: usize,
+    group: i32,
     mut from: socket2::Socket,
     mut to: TcpStream,
-    reporter: mpsc::Sender<(usize, Event)>,
+    reporter: mpsc::Sender<(usize, i32, Event)>,
 ) -> Result<()> {
     #[allow(invalid_value)]
     let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
@@ -235,14 +242,14 @@ fn copy_down(
                 return Ok(());
             }
             Ok(n) => {
-                reporter.send((id, Event::Download(n)))?;
+                reporter.send((id, group, Event::Download(n)))?;
                 to.write_all(&buffer[..n])?;
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e)
                 if e.kind() == io::ErrorKind::TimedOut || e.kind() == io::ErrorKind::WouldBlock =>
             {
-                reporter.send((id, Event::Error("IO timeout".into())))?;
+                reporter.send((id, group, Event::Error("IO timeout".into())))?;
                 return Ok(());
             }
             Err(e) => {

@@ -1,7 +1,7 @@
 use std::{borrow::Cow, net::IpAddr};
 #[derive(Debug)]
 pub enum Event {
-    Received(i32, IpAddr),
+    Received(IpAddr),
     Resolved(String),
     Connected(IpAddr, IpAddr),
     Done(),
