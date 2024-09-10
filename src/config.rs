@@ -7,6 +7,7 @@ use std::{
 // pub type Error = Box<dyn std::error::Error>;
 
 pub struct Routing {
+    pub group: i32,
     pub host: Box<[SocketAddr]>,
     pub pool: IpPool,
 }
@@ -17,6 +18,7 @@ pub struct Config {
     pub io_ttl: Duration,
     pub ipv6_first: Option<bool>,
     pub tui: bool,
+    pub lookup: Option<SocketAddr>,
 }
 pub struct Pool<T: Clone> {
     pool: Box<[T]>,
@@ -74,11 +76,13 @@ pub fn read_config(file_name: &str) -> Result<(Config, Vec<Routing>)> {
         io_ttl: Duration::from_millis(res.timeout.io),
         ipv6_first: res.ipv6_first,
         tui: res.tui,
+        lookup: res.lookup,
     };
     let routing = res
         .routing
         .into_iter()
         .map(|r| Routing {
+            group: r.id,
             host: r.host.into_boxed_slice(),
             pool: IpPool::new(r.pool),
         })
@@ -92,6 +96,7 @@ mod toml_file {
 
     #[derive(Deserialize)]
     pub struct Routing {
+        pub id: i32,
         pub host: Vec<SocketAddr>,
         pub pool: Vec<IpAddr>,
     }
@@ -102,6 +107,7 @@ mod toml_file {
         pub timeout: Timeout,
         pub tui: bool,
         pub ipv6_first: Option<bool>,
+        pub lookup: Option<SocketAddr>,
     }
 
     #[derive(Deserialize)]

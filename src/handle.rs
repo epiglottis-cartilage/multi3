@@ -13,12 +13,13 @@ const HTTPS_HEADER: &str = "CONNECT";
 
 pub fn handle(
     id: usize,
+    group: i32,
     local: TcpStream,
     config: &config::Config,
     pool: Arc<config::IpPool>,
     reporter: mpsc::Sender<(usize, Event)>,
 ) {
-    match inner_handle(id, local, config, pool, reporter.clone()) {
+    match inner_handle(id, group, local, config, pool, reporter.clone()) {
         Err(e) => {
             let _ = reporter.send((id, Event::Error(e.to_string().into())));
         }
@@ -28,12 +29,13 @@ pub fn handle(
 
 fn inner_handle(
     id: usize,
+    group: i32,
     mut local: TcpStream,
     config: &config::Config,
     pool: Arc<config::IpPool>,
     reporter: mpsc::Sender<(usize, Event)>,
 ) -> Result<()> {
-    reporter.send((id, Event::Received(local.peer_addr()?.ip())))?;
+    reporter.send((id, Event::Received(group, local.peer_addr()?.ip())))?;
     local.set_read_timeout(Some(config.io_ttl))?;
     local.set_write_timeout(Some(config.io_ttl))?;
 

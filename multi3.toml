@@ -1,15 +1,19 @@
 tui = true # press 'q' to quit in tui
 # ipv6_first = true   # uncomment to enable, false => ipc4 first
 
+lookup = "0.0.0.0:7878"
+
 [timeout]
 connect = 5000 #ms
 retry = 10000  #ms
 io = 15000     #ms
 
 [[routing]]
+id = 0
 host = ["0.0.0.0:6210"]
-pool = ['192.168.1.38']
+pool = ["0.0.0.0"]
 
 [[routing]]
+id = 1
 host = ["0.0.0.0:6211"]
-pool = ['192.168.1.38']
+pool = ["0.0.0.0"]

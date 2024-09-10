@@ -7,6 +7,8 @@ pub enum Error {
     #[from]
     ParseError(toml::de::Error),
     ChannelError,
+    #[from]
+    NotNumError(std::num::ParseIntError),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

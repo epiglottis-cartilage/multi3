@@ -4,7 +4,11 @@ use crossterm::{
     ExecutableCommand,
 };
 use ratatui::{prelude::*, widgets::Paragraph};
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{LazyLock, Mutex},
+    thread,
+};
 use std::{io::stdout, time::Instant};
 use std::{net::IpAddr, sync::mpsc, time::Duration};
 
@@ -34,6 +38,7 @@ impl From<State> for &str {
 }
 
 struct Content {
+    group: i32,
     time_start: Instant,
     local: IpAddr,
     bind: Option<IpAddr>,
@@ -45,8 +50,9 @@ struct Content {
     addon: String,
 }
 impl Content {
-    fn new(local: IpAddr) -> Self {
+    fn new(group: i32, local: IpAddr) -> Self {
         Self {
+            group,
             time_start: Instant::now(),
             local,
             bind: None,
@@ -98,19 +104,26 @@ impl Content {
     }
 }
 
-struct Summary {
-    pub jobs: Option<BTreeMap<usize, Content>>,
+pub struct Summary {
+    jobs: Option<BTreeMap<usize, Content>>,
+    bit_counter: BTreeMap<i32, (u64, u64)>,
+    pub stopped: bool,
 }
 impl Summary {
     pub fn new() -> Self {
         Self {
             jobs: Some(BTreeMap::new()),
+            bit_counter: BTreeMap::new(),
+            stopped: false,
         }
     }
     pub fn update(&mut self, id: usize, event: Event) {
         if id != 0 {
-            if let Event::Received(ip) = event {
-                self.jobs.as_mut().unwrap().insert(id, Content::new(ip));
+            if let Event::Received(group, ip) = event {
+                self.jobs
+                    .as_mut()
+                    .unwrap()
+                    .insert(id, Content::new(group, ip));
             } else {
                 let mut index = match self.jobs.as_mut().unwrap().entry(id) {
                     std::collections::btree_map::Entry::Vacant(_) => return,
@@ -131,9 +144,11 @@ impl Summary {
                     }
                     Event::Upload(n) => {
                         content.upload += n;
+                        self.bit_counter.entry(content.group).or_default().0 += n as u64;
                     }
                     Event::Download(n) => {
                         content.download += n;
+                        self.bit_counter.entry(content.group).or_default().1 += n as u64;
                     }
                     Event::Retry() => {
                         content.addon.push('🔁');
@@ -148,6 +163,7 @@ impl Summary {
                 };
             }
         } else {
+            // if self.last_update.elapsed() > FRAME_INTERVAL {
             self.jobs = Some(
                 self.jobs
                     .take()
@@ -162,12 +178,41 @@ impl Summary {
         }
         // self
     }
-    pub fn jobs(&self) -> &BTreeMap<usize, Content> {
+    fn jobs(&self) -> &BTreeMap<usize, Content> {
         self.jobs.as_ref().unwrap()
+    }
+    pub fn lookup_group(&self, group: i32) -> Option<(u64, u64)> {
+        self.bit_counter.get(&group).copied()
     }
 }
 
-pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
+pub static SUMMARY: LazyLock<Mutex<Summary>> = LazyLock::new(|| Mutex::new(Summary::new()));
+
+pub fn init(recv: mpsc::Receiver<(usize, Event)>, tui: bool) -> std::io::Result<()> {
+    thread::spawn(|| {
+        for (id, event) in recv {
+            let mut summary = SUMMARY.lock().unwrap();
+            summary.update(id, event);
+            if summary.stopped {
+                break;
+            }
+        }
+    });
+
+    if tui {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || drawer(rx));
+        thread::spawn(move || {
+            while tx.send(()).is_ok() {
+                thread::sleep(FRAME_INTERVAL)
+            }
+        });
+    }
+
+    Ok(())
+}
+
+pub fn drawer(recv: mpsc::Receiver<()>) -> std::io::Result<()> {
     stdout().execute(EnterAlternateScreen)?;
     enable_raw_mode()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -190,32 +235,30 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
         .direction(Direction::Vertical)
         .constraints(vec![Constraint::Length(1), Constraint::Fill(1)]);
 
-    let mut summary = Summary::new();
-
-    for (id, event) in recv {
-        summary.update(id, event);
-        if id == 0 {
-            terminal.draw(|frame| {
-                // .split(frame.size());
-                // let area = frame.size();
-                let out_layout = out_layout.split(frame.area());
-                frame.render_widget(Paragraph::new(title.clone()), out_layout[0]);
-                frame.render_widget(
-                    Paragraph::new(
-                        summary
-                            .jobs()
-                            .iter()
-                            .map(|(_, x)| x.to_line())
-                            .collect::<Vec<Line>>(),
-                    ),
-                    out_layout[1],
-                );
-            })?;
-            if event::poll(FRAME_INTERVAL)? {
-                if let event::Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
-                        break;
-                    }
+    for () in recv {
+        terminal.draw(|frame| {
+            // .split(frame.size());
+            // let area = frame.size();
+            let out_layout = out_layout.split(frame.area());
+            frame.render_widget(Paragraph::new(title.clone()), out_layout[0]);
+            frame.render_widget(
+                Paragraph::new(
+                    SUMMARY
+                        .lock()
+                        .unwrap()
+                        .jobs()
+                        .iter()
+                        .map(|(_, x)| x.to_line())
+                        .collect::<Vec<Line>>(),
+                ),
+                out_layout[1],
+            );
+        })?;
+        if event::poll(FRAME_INTERVAL)? {
+            if let event::Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
+                    SUMMARY.lock().unwrap().stopped = true;
+                    break;
                 }
             }
         }
