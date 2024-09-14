@@ -14,25 +14,26 @@ use std::{net::IpAddr, sync::mpsc, time::Duration};
 
 use super::event::Event;
 
-pub const FRAME_INTERVAL: Duration = Duration::from_millis(200);
+pub const FRAME_INTERVAL: Duration = Duration::from_millis(400);
 const WIDGETS_TIME_LEN: usize = 5;
 const WIDGETS_SPEED_LEN: usize = 10;
-const KEEP_AFTER_DONE: Duration = Duration::from_secs(2);
+const DISPLAY_AFTER_DONE: Duration = Duration::from_secs(2);
+const KEEP_AFTER_DONE: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy)]
 enum State {
     Waiting,
     Connected,
-    Done(Instant),
-    Error(Instant),
+    Done,
+    Error,
 }
 impl From<State> for &str {
     fn from(val: State) -> Self {
         match val {
             State::Waiting => "⏳",
             State::Connected => "🔗",
-            State::Done(_) => "✅",
-            State::Error(_) => "❎",
+            State::Done => "✅",
+            State::Error => "❎",
         }
     }
 }
@@ -40,6 +41,7 @@ impl From<State> for &str {
 struct Content {
     group: i32,
     time_start: Instant,
+    last_update: Instant,
     local: IpAddr,
     bind: Option<IpAddr>,
     remote: Option<IpAddr>,
@@ -54,6 +56,7 @@ impl Content {
         Self {
             group,
             time_start: Instant::now(),
+            last_update: Instant::now(),
             local,
             bind: None,
             remote: None,
@@ -139,6 +142,7 @@ impl Summary {
                     std::collections::btree_map::Entry::Occupied(x) => x,
                 };
                 let content = index.get_mut();
+                content.last_update = Instant::now();
                 match event {
                     Event::Resolved(uri) => {
                         content.uri = Some(uri);
@@ -149,7 +153,7 @@ impl Summary {
                         content.state = State::Connected;
                     }
                     Event::Done() => {
-                        content.state = State::Done(Instant::now());
+                        content.state = State::Done;
                     }
                     Event::Upload(n) => {
                         content.upload += n;
@@ -161,7 +165,7 @@ impl Summary {
                         content.addon.push('🔁');
                     }
                     Event::Error(e) => {
-                        content.state = State::Error(Instant::now());
+                        content.state = State::Error;
                         content.addon += &e;
                     }
                     _ => {
@@ -177,7 +181,9 @@ impl Summary {
                     .unwrap()
                     .into_iter()
                     .filter(|(_id, content)| match content.state {
-                        State::Done(t) | State::Error(t) => t.elapsed() < KEEP_AFTER_DONE,
+                        State::Done | State::Error => {
+                            content.last_update.elapsed() < KEEP_AFTER_DONE
+                        }
                         _ => true,
                     })
                     .collect(),
@@ -255,6 +261,12 @@ pub fn drawer(recv: mpsc::Receiver<()>) -> std::io::Result<()> {
                         .unwrap()
                         .jobs()
                         .iter()
+                        .filter(|(_, x)| match x.state {
+                            State::Done | State::Error => {
+                                x.last_update.elapsed() < DISPLAY_AFTER_DONE
+                            }
+                            _ => true,
+                        })
                         .map(|(_, x)| x.to_line())
                         .collect::<Vec<Line>>(),
                 ),
