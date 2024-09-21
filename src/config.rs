@@ -7,7 +7,7 @@ use std::{
 // pub type Error = Box<dyn std::error::Error>;
 
 pub struct Routing {
-    pub group: i32,
+    pub group: u64,
     pub host: Box<[SocketAddr]>,
     pub pool: IpPool,
 }
@@ -96,7 +96,7 @@ mod toml_file {
 
     #[derive(Deserialize)]
     pub struct Routing {
-        pub id: i32,
+        pub id: u64,
         pub host: Vec<SocketAddr>,
         pub pool: Vec<IpAddr>,
     }

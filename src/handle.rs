@@ -13,11 +13,11 @@ const HTTPS_HEADER: &str = "CONNECT";
 
 pub fn handle(
     id: usize,
-    group: i32,
+    group: u64,
     local: TcpStream,
     config: &config::Config,
     pool: Arc<config::IpPool>,
-    reporter: mpsc::Sender<(usize, i32, Event)>,
+    reporter: mpsc::Sender<(usize, u64, Event)>,
 ) {
     match inner_handle(id, group, local, config, pool, reporter.clone()) {
         Err(e) => {
@@ -29,11 +29,11 @@ pub fn handle(
 
 fn inner_handle(
     id: usize,
-    group: i32,
+    group: u64,
     mut local: TcpStream,
     config: &config::Config,
     pool: Arc<config::IpPool>,
-    reporter: mpsc::Sender<(usize, i32, Event)>,
+    reporter: mpsc::Sender<(usize, u64, Event)>,
 ) -> Result<()> {
     reporter.send((id, group, Event::Received(local.peer_addr()?.ip())))?;
     local.set_read_timeout(Some(config.io_ttl))?;
@@ -197,10 +197,10 @@ fn inner_handle(
 }
 fn copy_up(
     id: usize,
-    group: i32,
+    group: u64,
     mut from: TcpStream,
     mut to: socket2::Socket,
-    reporter: mpsc::Sender<(usize, i32, Event)>,
+    reporter: mpsc::Sender<(usize, u64, Event)>,
 ) -> Result<()> {
     #[allow(invalid_value)]
     let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
@@ -229,10 +229,10 @@ fn copy_up(
 
 fn copy_down(
     id: usize,
-    group: i32,
+    group: u64,
     mut from: socket2::Socket,
     mut to: TcpStream,
-    reporter: mpsc::Sender<(usize, i32, Event)>,
+    reporter: mpsc::Sender<(usize, u64, Event)>,
 ) -> Result<()> {
     #[allow(invalid_value)]
     let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };

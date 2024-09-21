@@ -39,7 +39,7 @@ impl From<State> for &str {
 }
 
 struct Content {
-    group: i32,
+    group: u64,
     time_start: Instant,
     last_update: Instant,
     local: IpAddr,
@@ -52,7 +52,7 @@ struct Content {
     addon: String,
 }
 impl Content {
-    fn new(group: i32, local: IpAddr) -> Self {
+    fn new(group: u64, local: IpAddr) -> Self {
         Self {
             group,
             time_start: Instant::now(),
@@ -109,7 +109,7 @@ impl Content {
 
 pub struct Summary {
     jobs: Option<BTreeMap<usize, Content>>,
-    bit_counter: BTreeMap<i32, (u64, u64)>,
+    bit_counter: BTreeMap<u64, (u64, u64)>,
     pub stopped: bool,
 }
 impl Summary {
@@ -120,7 +120,7 @@ impl Summary {
             stopped: false,
         }
     }
-    pub fn update(&mut self, id: usize, group: i32, event: Event) {
+    pub fn update(&mut self, id: usize, group: u64, event: Event) {
         match event {
             Event::Upload(n) => {
                 self.bit_counter.entry(group).or_default().0 += n as u64;
@@ -194,14 +194,14 @@ impl Summary {
     fn jobs(&self) -> &BTreeMap<usize, Content> {
         self.jobs.as_ref().unwrap()
     }
-    pub fn lookup_group(&self, group: i32) -> Option<(u64, u64)> {
+    pub fn lookup_group(&self, group: u64) -> Option<(u64, u64)> {
         self.bit_counter.get(&group).copied()
     }
 }
 
 pub static SUMMARY: LazyLock<Mutex<Summary>> = LazyLock::new(|| Mutex::new(Summary::new()));
 
-pub fn init(recv: mpsc::Receiver<(usize, i32, Event)>, tui: bool) -> std::io::Result<()> {
+pub fn init(recv: mpsc::Receiver<(usize, u64, Event)>, tui: bool) -> std::io::Result<()> {
     thread::spawn(|| {
         for (id, group, event) in recv {
             let mut summary = SUMMARY.lock().unwrap();

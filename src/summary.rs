@@ -17,7 +17,7 @@ pub fn start_summary_server(socket: SocketAddr) -> io::Result<()> {
 pub fn handle(mut stream: TcpStream) -> Result<()> {
     let mut buffer = [0; 512];
     let n = stream.read(&mut buffer)?;
-    let group: i32 = String::from_utf8_lossy(&buffer[..n]).parse()?;
+    let group = String::from_utf8_lossy(&buffer[..n]).parse()?;
     let summary = SUMMARY.lock().unwrap();
     let (ul, dl) = summary.lookup_group(group).unwrap_or((0, 0));
     stream.write(format!("{{\"ul\":{ul},\"dl\":{dl}}}",).as_bytes())?;
