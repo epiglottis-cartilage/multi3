@@ -1,5 +1,5 @@
 tui = true # press 'q' to quit in tui
-# ipv6_first = true   # uncomment to enable, false => ipc4 first
+# ipv6_first = true   # uncomment to enable, false => ipv4 first
 
 lookup = "0.0.0.0:7878"
 
