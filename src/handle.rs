@@ -48,7 +48,11 @@ fn inner_handle(
         let head = request_split.next();
         let uri = request_split
             .skip_while(|x| !x.eq_ignore_ascii_case("Host:"))
-            .nth(1);
+            .nth(1)
+            .or(match head {
+                None => None,
+                Some(head) => head.split_ascii_whitespace().nth(1),
+            });
         let mut uri = match uri {
             None => {
                 reporter.send((id, Event::Error(format!("No host in {}", request).into())))?;
