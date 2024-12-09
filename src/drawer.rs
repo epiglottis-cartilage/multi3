@@ -4,6 +4,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use ratatui::{prelude::*, widgets::Paragraph};
+use std::collections::BTreeMap;
 use std::{io::stdout, time::Instant};
 use std::{net::IpAddr, sync::mpsc, time::Duration};
 
@@ -97,40 +98,25 @@ impl Content {
     }
 }
 
-pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
-    stdout().execute(EnterAlternateScreen)?;
-    enable_raw_mode()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-    terminal.clear()?;
-
-    let mut jobs = Vec::new();
-    let title: Line = vec![
-        Span::raw(format!("{:>width$}", "time", width = WIDGETS_TIME_LEN)).cyan(),
-        Span::raw(format!(
-            "{:>width$} {:>width$}",
-            "⇧KB",
-            "⇩KB",
-            width = WIDGETS_SPEED_LEN
-        ))
-        .light_magenta(),
-        Span::raw("🔰").blue().bold(),
-    ]
-    .into();
-
-    let out_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(1), Constraint::Fill(1)]);
-
-    for (id, event) in recv {
+struct Summary {
+    pub jobs: Option<BTreeMap<usize, Content>>,
+}
+impl Summary {
+    pub fn new() -> Self {
+        Self {
+            jobs: Some(BTreeMap::new()),
+        }
+    }
+    pub fn update(&mut self, id: usize, event: Event) {
         if id != 0 {
             if let Event::Received(ip) = event {
-                jobs.push((id, Content::new(ip)));
+                self.jobs.as_mut().unwrap().insert(id, Content::new(ip));
             } else {
-                let index = match jobs.binary_search_by_key(&id, |x| x.0) {
-                    Ok(x) => x,
-                    Err(_) => continue,
+                let mut index = match self.jobs.as_mut().unwrap().entry(id) {
+                    std::collections::btree_map::Entry::Vacant(_) => return,
+                    std::collections::btree_map::Entry::Occupied(x) => x,
                 };
-                let content = &mut jobs.get_mut(index).unwrap().1;
+                let content = index.get_mut();
                 match event {
                     Event::Resolved(uri) => {
                         content.uri = Some(uri);
@@ -162,17 +148,66 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
                 };
             }
         } else {
-            jobs.retain(|(_id, content)| match content.state {
-                State::Done(t) | State::Error(t) => t.elapsed() < KEEP_AFTER_DONE,
-                _ => true,
-            });
+            self.jobs = Some(
+                self.jobs
+                    .take()
+                    .unwrap()
+                    .into_iter()
+                    .filter(|(_id, content)| match content.state {
+                        State::Done(t) | State::Error(t) => t.elapsed() < KEEP_AFTER_DONE,
+                        _ => true,
+                    })
+                    .collect(),
+            );
+        }
+        // self
+    }
+    pub fn jobs(&self) -> &BTreeMap<usize, Content> {
+        self.jobs.as_ref().unwrap()
+    }
+}
+
+pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
+    stdout().execute(EnterAlternateScreen)?;
+    enable_raw_mode()?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    terminal.clear()?;
+
+    let title: Line = vec![
+        Span::raw(format!("{:>width$}", "time", width = WIDGETS_TIME_LEN)).cyan(),
+        Span::raw(format!(
+            "{:>width$} {:>width$}",
+            "⇧KB",
+            "⇩KB",
+            width = WIDGETS_SPEED_LEN
+        ))
+        .light_magenta(),
+        Span::raw("🔰").blue().bold(),
+    ]
+    .into();
+
+    let out_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Length(1), Constraint::Fill(1)]);
+
+    let mut summary = Summary::new();
+
+    for (id, event) in recv {
+        summary.update(id, event);
+        if id == 0 {
             terminal.draw(|frame| {
                 // .split(frame.size());
                 // let area = frame.size();
-                let out_layout = out_layout.split(frame.size());
+                let out_layout = out_layout.split(frame.area());
                 frame.render_widget(Paragraph::new(title.clone()), out_layout[0]);
                 frame.render_widget(
-                    Paragraph::new(jobs.iter().map(|(_, x)| x.to_line()).collect::<Vec<Line>>()),
+                    Paragraph::new(
+                        summary
+                            .jobs()
+                            .iter()
+                            .map(|(_, x)| x.to_line())
+                            .collect::<Vec<Line>>(),
+                    ),
                     out_layout[1],
                 );
             })?;
