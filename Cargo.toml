@@ -6,9 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "*"
+derive_more = { version = "*", features = ["from"] }
 socket2 = "*"
 toml = "*"
 serde = { version = "*", features = ["derive"] }
 crossterm = "*"
 ratatui = "*"
+
+[profile.release]
+opt-level = 's'
+lto = true
+codegen-units = 1
+panic = 'abort'

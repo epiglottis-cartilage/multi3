@@ -1,34 +1,50 @@
-use std::{
-    net::TcpListener,
-    sync::{mpsc, Arc},
-    thread,
-};
-
 mod config;
 mod drawer;
+mod error;
 mod event;
 mod handle;
+pub use error::*;
+use std::{
+    net::TcpListener,
+    sync::{mpsc, Arc, Mutex},
+    thread,
+};
 fn main() {
-    let (host, cfg) = config::read_config("multi3.toml").unwrap();
-
-    let listener = TcpListener::bind(host.host).unwrap();
-    println!("Listening {}", host.host);
+    let (cfg, routings) = config::read_config("multi3.toml").unwrap();
 
     let (tx, rx) = mpsc::channel();
-    let tx_ = tx.clone();
 
-    thread::spawn(move || {
-        let cfg = Arc::new(cfg);
-        let mut id = 1;
-        for stream in listener.incoming().flatten() {
-            let config = cfg.clone();
-            let tx__ = tx_.clone();
-            thread::spawn(move || handle::handle(id, stream, config, &tx__));
-            id += 1;
+    let cfg = &*Box::leak(Box::new(cfg));
+    let id = Arc::new(Mutex::new(0));
+    for config::Routing { host, pool } in routings {
+        let pool = Arc::new(pool);
+        for socket in host {
+            let pool = pool.clone();
+            let tx = tx.clone();
+            let id = id.clone();
+            thread::spawn(move || {
+                println!("Listening on: {}", socket);
+                let listener = match TcpListener::bind(&socket) {
+                    Ok(listener) => listener,
+                    Err(e) => {
+                        println!("Failed to bind to {}: {}", socket, e);
+                        return;
+                    }
+                };
+                for stream in listener.incoming() {
+                    let pool = pool.clone();
+                    let tx = tx.clone();
+                    if let Ok(stream) = stream {
+                        let mut id = id.lock().unwrap();
+                        *id += 1;
+                        let id = id.clone();
+                        thread::spawn(move || handle::handle(id, stream, cfg, pool, tx));
+                    }
+                }
+            });
         }
-    });
-
-    if host.tui {
+    }
+    if cfg.tui {
         thread::spawn(move || drawer::drawer(rx));
         while tx.send((0, event::Event::Done())).is_ok() {
             thread::sleep(drawer::FRAME_INTERVAL)
