@@ -176,10 +176,11 @@ fn inner_handle(
         let reporter_up = reporter.clone();
         let local_ = local.try_clone()?;
         let remote_ = remote.try_clone()?;
-        let up = thread::spawn(move || copy_up(id, local_, remote_, reporter_up));
+        let up = thread::spawn(move || copy(id, Box::new(local_), Box::new(remote_), reporter_up));
 
         let reporter_down = reporter.clone();
-        let down = thread::spawn(move || copy_down(id, remote, local, reporter_down));
+        let down =
+            thread::spawn(move || copy(id, Box::new(remote), Box::new(local), reporter_down));
 
         match up.join().and(down.join()).unwrap() {
             Ok(()) => reporter.send((id, Event::Done()))?,
@@ -188,10 +189,10 @@ fn inner_handle(
     }
     Ok(())
 }
-fn copy_up(
+fn copy(
     id: usize,
-    mut from: TcpStream,
-    mut to: socket2::Socket,
+    mut from: Box<dyn Read>,
+    mut to: Box<dyn Write>,
     reporter: mpsc::Sender<(usize, Event)>,
 ) -> Result<()> {
     #[allow(invalid_value)]
@@ -210,37 +211,6 @@ fn copy_up(
                 if e.kind() == io::ErrorKind::TimedOut || e.kind() == io::ErrorKind::WouldBlock =>
             {
                 // reporter.send((id, Event::Error("IO timeout".into())))?;
-                return Ok(());
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
-        }
-    }
-}
-
-fn copy_down(
-    id: usize,
-    mut from: socket2::Socket,
-    mut to: TcpStream,
-    reporter: mpsc::Sender<(usize, Event)>,
-) -> Result<()> {
-    #[allow(invalid_value)]
-    let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
-    loop {
-        match from.read(&mut buffer) {
-            Ok(0) => {
-                return Ok(());
-            }
-            Ok(n) => {
-                reporter.send((id, Event::Download(n)))?;
-                to.write_all(&buffer[..n])?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e)
-                if e.kind() == io::ErrorKind::TimedOut || e.kind() == io::ErrorKind::WouldBlock =>
-            {
-                reporter.send((id, Event::Error("IO timeout".into())))?;
                 return Ok(());
             }
             Err(e) => {

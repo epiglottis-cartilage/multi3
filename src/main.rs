@@ -9,6 +9,7 @@ use std::{
     sync::{mpsc, Arc, Mutex},
     thread,
 };
+
 fn main() {
     let (cfg, routings) = config::read_config("multi3.toml").unwrap();
 
