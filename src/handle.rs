@@ -176,11 +176,18 @@ fn inner_handle(
         let reporter_up = reporter.clone();
         let local_ = local.try_clone()?;
         let remote_ = remote.try_clone()?;
-        let up = thread::spawn(move || copy(id, Box::new(local_), Box::new(remote_), reporter_up));
+        let up = thread::spawn(move || {
+            copy(Box::new(local_), Box::new(remote_), move |n| {
+                reporter_up.send((id, Event::Upload(n)))
+            })
+        });
 
         let reporter_down = reporter.clone();
-        let down =
-            thread::spawn(move || copy(id, Box::new(remote), Box::new(local), reporter_down));
+        let down = thread::spawn(move || {
+            copy(Box::new(remote), Box::new(local), move |n| {
+                reporter_down.send((id, Event::Download(n)))
+            })
+        });
 
         match up.join().and(down.join()).unwrap() {
             Ok(()) => reporter.send((id, Event::Done()))?,
@@ -190,10 +197,9 @@ fn inner_handle(
     Ok(())
 }
 fn copy(
-    id: usize,
-    mut from: Box<dyn Read>,
-    mut to: Box<dyn Write>,
-    reporter: mpsc::Sender<(usize, Event)>,
+    mut from: impl Read,
+    mut to: impl Write,
+    report: impl Fn(usize) -> std::result::Result<(), mpsc::SendError<(usize, Event)>>,
 ) -> Result<()> {
     #[allow(invalid_value)]
     let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
@@ -203,7 +209,7 @@ fn copy(
                 return Ok(());
             }
             Ok(n) => {
-                reporter.send((id, Event::Upload(n)))?;
+                report(n)?;
                 to.write_all(&buffer[..n])?;
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
