@@ -183,10 +183,18 @@ fn inner_handle(
         let reporter_up = reporter.clone();
         let local_ = local.try_clone()?;
         let remote_ = remote.try_clone()?;
-        let up = thread::spawn(move || copy_up(id, group, local_, remote_, reporter_up));
+        let up = thread::spawn(move || {
+            copy(Box::new(local_), Box::new(remote_), move |n| {
+                reporter_up.send((id, group, Event::Download(n)))
+            })
+        });
 
         let reporter_down = reporter.clone();
-        let down = thread::spawn(move || copy_down(id, group, remote, local, reporter_down));
+        let down = thread::spawn(move || {
+            copy(Box::new(remote), Box::new(local), move |n| {
+                reporter_down.send((id, group, Event::Download(n)))
+            })
+        });
 
         match up.join().and(down.join()).unwrap() {
             Ok(()) => reporter.send((id, group, Event::Done()))?,
@@ -195,12 +203,10 @@ fn inner_handle(
     }
     Ok(())
 }
-fn copy_up(
-    id: usize,
-    group: u64,
-    mut from: TcpStream,
-    mut to: socket2::Socket,
-    reporter: mpsc::Sender<(usize, u64, Event)>,
+fn copy(
+    mut from: impl Read,
+    mut to: impl Write,
+    reporter: impl Fn(usize) -> std::result::Result<(), mpsc::SendError<(usize, u64, Event)>>,
 ) -> Result<()> {
     #[allow(invalid_value)]
     let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
@@ -210,7 +216,7 @@ fn copy_up(
                 return Ok(());
             }
             Ok(n) => {
-                reporter.send((id, group, Event::Upload(n)))?;
+                reporter(n)?;
                 to.write_all(&buffer[..n])?;
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -218,38 +224,6 @@ fn copy_up(
                 if e.kind() == io::ErrorKind::TimedOut || e.kind() == io::ErrorKind::WouldBlock =>
             {
                 // reporter.send((id, Event::Error("IO timeout".into())))?;
-                return Ok(());
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
-        }
-    }
-}
-
-fn copy_down(
-    id: usize,
-    group: u64,
-    mut from: socket2::Socket,
-    mut to: TcpStream,
-    reporter: mpsc::Sender<(usize, u64, Event)>,
-) -> Result<()> {
-    #[allow(invalid_value)]
-    let mut buffer = unsafe { std::mem::MaybeUninit::<[u8; BUFFER_SIZE]>::uninit().assume_init() };
-    loop {
-        match from.read(&mut buffer) {
-            Ok(0) => {
-                return Ok(());
-            }
-            Ok(n) => {
-                reporter.send((id, group, Event::Download(n)))?;
-                to.write_all(&buffer[..n])?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e)
-                if e.kind() == io::ErrorKind::TimedOut || e.kind() == io::ErrorKind::WouldBlock =>
-            {
-                reporter.send((id, group, Event::Error("IO timeout".into())))?;
                 return Ok(());
             }
             Err(e) => {
