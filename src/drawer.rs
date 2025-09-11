@@ -1,7 +1,7 @@
 use crossterm::{
-    event::{self, KeyCode, KeyEventKind},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
+    event::{self, KeyCode, KeyEventKind},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{prelude::*, widgets::Paragraph};
 use std::collections::BTreeMap;
@@ -58,7 +58,7 @@ impl Content {
             addon: String::new(),
         }
     }
-    fn to_line(&self) -> Line {
+    fn to_line(&self) -> Line<'_> {
         let mut res = Vec::with_capacity(6);
         res.push(
             Span::raw(format!(

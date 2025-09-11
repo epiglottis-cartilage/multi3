@@ -1,10 +1,10 @@
+use crate::Result;
 use crate::config;
 use crate::event::Event;
-use crate::Result;
 use std::{
     io::{self, prelude::*},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs},
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
     thread,
 };
 
@@ -37,7 +37,7 @@ fn inner_handle(
     local.set_read_timeout(Some(config.io_ttl))?;
     local.set_write_timeout(Some(config.io_ttl))?;
 
-    let is_https;
+    let is_connect;
 
     let uri = {
         #[allow(invalid_value)]
@@ -48,9 +48,16 @@ fn inner_handle(
         let mut request_split = request.split_ascii_whitespace();
 
         let head = request_split.next();
+        if head.unwrap_or_default().eq_ignore_ascii_case(HTTPS_HEADER) {
+            is_connect = true;
+        } else {
+            is_connect = false;
+        }
+        let path = request_split.next();
         let uri = request_split
             .skip_while(|x| !x.eq_ignore_ascii_case("Host:"))
-            .nth(1);
+            .nth(1)
+            .or(path);
         let mut uri = match uri {
             None => {
                 reporter.send((id, Event::Error(format!("No host in {}", request).into())))?;
@@ -66,12 +73,9 @@ fn inner_handle(
             uri += ":80";
         }
 
-        if head.unwrap().eq_ignore_ascii_case(HTTPS_HEADER) {
+        if is_connect {
             // consume the CONNECT package of https request.
             let _ = local.read(&mut buffer)?;
-            is_https = true;
-        } else {
-            is_https = false;
         }
 
         uri
@@ -164,7 +168,7 @@ fn inner_handle(
         ),
     ))?;
 
-    if is_https {
+    if is_connect {
         // answer to CONNECT
         local.write_all(b"HTTP/1.1 200 OK\r\n\r\n")?;
     }

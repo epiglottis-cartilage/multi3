@@ -1,3 +1,4 @@
+#![feature(result_option_map_or_default)]
 mod config;
 mod drawer;
 mod error;
@@ -6,7 +7,7 @@ mod handle;
 pub use error::*;
 use std::{
     net::TcpListener,
-    sync::{mpsc, Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     thread,
 };
 
