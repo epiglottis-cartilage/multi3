@@ -1,4 +1,3 @@
-#![feature(result_option_map_or_default)]
 mod config;
 mod drawer;
 mod error;
