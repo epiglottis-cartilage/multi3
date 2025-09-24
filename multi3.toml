@@ -3,13 +3,12 @@ tui = true # press 'q' to quit in tui
 
 [timeout]
 connect = 5000 #ms
-retry = 10000  #ms
 io = 15000     #ms
 
 [[routing]]
 host = ["0.0.0.0:6210"]
-pool = ['192.168.1.38']
+pool = ['192.168.43.210']
 
-[[routing]]
-host = ["0.0.0.0:6211"]
-pool = ['192.168.1.38']
+# [[routing]]
+# host = ["0.0.0.0:6211"]
+# pool = ['192.168.1.38']

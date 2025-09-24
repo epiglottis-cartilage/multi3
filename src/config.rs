@@ -12,9 +12,8 @@ pub struct Routing {
 }
 
 pub struct Config {
-    pub connect_ttl: Duration,
-    pub retry_ttl: Duration,
-    pub io_ttl: Duration,
+    pub connect_timeout: Duration,
+    pub io_timeout: Duration,
     pub ipv6_first: Option<bool>,
     pub tui: bool,
 }
@@ -83,9 +82,8 @@ pub fn read_config(file_name: &str) -> Result<(Config, Vec<Routing>)> {
     let _ = File::open(file_name)?.read_to_string(&mut buf)?;
     let res: toml_file::Config = toml::from_str(&buf)?;
     let config = Config {
-        connect_ttl: Duration::from_millis(res.timeout.connect),
-        retry_ttl: Duration::from_millis(res.timeout.retry),
-        io_ttl: Duration::from_millis(res.timeout.io),
+        connect_timeout: Duration::from_millis(res.timeout.connect),
+        io_timeout: Duration::from_millis(res.timeout.io),
         ipv6_first: res.ipv6_first,
         tui: res.tui,
     };
@@ -121,7 +119,6 @@ mod toml_file {
     #[derive(Deserialize)]
     pub struct Timeout {
         pub connect: u64,
-        pub retry: u64,
         pub io: u64,
     }
 }

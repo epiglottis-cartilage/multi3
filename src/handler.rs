@@ -20,7 +20,7 @@ pub fn handle(
     reporter: &mpsc::Sender<(usize, Event)>,
 ) {
     // eprintln!("[{id}] Recv from {}", local.peer_addr().unwrap());
-
+    local.set_read_timeout(Some(cfg.0.io_timeout)).unwrap();
     let mut buf = Vec::with_capacity(SIZE);
     unsafe {
         buf.set_len(SIZE);
@@ -494,8 +494,10 @@ fn connect(
                 builder.bind(&SocketAddr::new(cfg.1.next_v6().into(), 0).into())?;
             }
         }
-        if let Ok(()) = builder.connect(&host.into()) {
-            return Ok(builder.into());
+        if let Ok(()) = builder.connect_timeout(&host.into(), cfg.0.connect_timeout) {
+            let remote: TcpStream = builder.into();
+            remote.set_read_timeout(Some(cfg.0.io_timeout)).unwrap();
+            return Ok(remote);
         } else {
             reporter()?;
         }
