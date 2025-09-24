@@ -61,9 +61,7 @@ pub fn handle(
             return;
         } {
             // eprintln!("[{id}] Inner error: {e}");
-            reporter
-                .send((id, Event::Error(e.to_string().into())))
-                .unwrap();
+            let _ = reporter.send((id, Event::Error(e.to_string().into())));
         }
     }
 }
@@ -79,7 +77,7 @@ fn http_resolved(
     reporter
         .send((id, Event::Recognized(Protocol::Http)))
         .unwrap();
-    reporter.send((id, Event::Resolved(addr.clone()))).unwrap();
+    reporter.send((id, Event::Resolved(addr.clone())))?;
 
     let hosts = match lookup_host(&addr, cfg) {
         Ok(hosts) => hosts,
@@ -122,7 +120,7 @@ fn https_resolved(
     reporter
         .send((id, Event::Recognized(Protocol::Https)))
         .unwrap();
-    reporter.send((id, Event::Resolved(addr.clone()))).unwrap();
+    reporter.send((id, Event::Resolved(addr.clone())))?;
 
     let hosts = match lookup_host(&addr, cfg) {
         Ok(hosts) => hosts,
@@ -211,7 +209,7 @@ fn socks_tcp_resolved(
     reporter
         .send((id, Event::Recognized(Protocol::Socks5Tcp)))
         .unwrap();
-    reporter.send((id, Event::Resolved(addr.clone()))).unwrap();
+    reporter.send((id, Event::Resolved(addr.clone())))?;
 
     let hosts = match lookup_host(&addr, cfg) {
         Ok(hosts) => hosts,
@@ -305,7 +303,7 @@ fn socks_udp_relay(
         }
     }
     // eprintln!("[{id}] Done");
-    reporter.send((id, Event::Done())).unwrap();
+    reporter.send((id, Event::Done()))?;
     Ok(())
 }
 
@@ -346,7 +344,7 @@ fn tcp_relay(
     handle.join().unwrap()?;
 
     // eprintln!("[{id}] Done",);
-    reporter.send((id, Event::Done())).unwrap();
+    reporter.send((id, Event::Done()))?;
     Ok(())
 }
 fn copy(

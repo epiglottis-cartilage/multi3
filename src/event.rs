@@ -25,10 +25,10 @@ pub enum Protocol {
 impl Protocol {
     pub fn display(&self) -> &str {
         match self {
-            Protocol::Http => "H.",
-            Protocol::Https => "Hs",
-            Protocol::Socks5Tcp => "St",
-            Protocol::Socks5Udp => "Su",
+            Protocol::Http =>      "    http://",
+            Protocol::Https =>     "   https://",
+            Protocol::Socks5Tcp => "T socks5://",
+            Protocol::Socks5Udp => "U socks5://",
         }
     }
 }

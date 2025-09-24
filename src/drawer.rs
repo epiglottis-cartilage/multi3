@@ -89,14 +89,14 @@ impl Content {
 
         let icon: &str = self.state.into();
         res.push(Span::raw(icon));
-        let protocol: &str = self.protocol.as_ref().map(|p| p.display()).unwrap_or("..");
-        res.push(Span::raw(protocol));
 
         // res.push(Span::raw(self.local.to_string()).light_blue());
         if let Some(ip) = &self.bind {
             res.push(Span::raw(ip.to_string()).cyan());
             res.push(Span::raw(" "));
         }
+        let protocol: &str = self.protocol.as_ref().map(|p| p.display()).unwrap_or("..");
+        res.push(Span::raw(protocol));
         if let Some(uri) = &self.uri {
             res.push(Span::raw(uri).blue().bold());
         }
@@ -181,7 +181,7 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
             width = WIDGETS_SPEED_LEN
         ))
         .light_magenta(),
-        Span::raw("🔰🔰").blue().bold(),
+        Span::raw("🔰").blue().bold(),
     ]
     .into();
 
