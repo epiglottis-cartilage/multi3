@@ -1,8 +1,10 @@
+#![feature(ip_from)]
+
 mod config;
 mod drawer;
 mod error;
 mod event;
-mod handle;
+mod handler;
 pub use error::*;
 use std::{
     net::TcpListener,
@@ -39,7 +41,7 @@ fn main() {
                         let mut id = id.lock().unwrap();
                         *id += 1;
                         let id = id.clone();
-                        thread::spawn(move || handle::handle(id, stream, cfg, pool, tx));
+                        thread::spawn(move || handler::handle(id, stream, &(cfg, pool), &tx));
                     }
                 }
             });

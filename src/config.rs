@@ -18,20 +18,22 @@ pub struct Config {
     pub ipv6_first: Option<bool>,
     pub tui: bool,
 }
-pub struct Pool<T: Clone> {
+struct Pool<T: Clone> {
+    default: T,
     pool: Box<[T]>,
     index: Mutex<usize>,
 }
 impl<T: Clone> Pool<T> {
-    pub fn new(pool: Box<[T]>) -> Self {
+    pub fn new(pool: Box<[T]>, default: T) -> Self {
         Self {
+            default,
             pool,
             index: Mutex::new(0),
         }
     }
-    pub fn next(&self) -> Option<T> {
+    pub fn next(&self) -> T {
         if self.pool.is_empty() {
-            return None;
+            return self.default.clone();
         }
         let mut index = self.index.lock().unwrap();
         let item = unsafe { self.pool.get_unchecked(*index) };
@@ -39,12 +41,14 @@ impl<T: Clone> Pool<T> {
         if *index >= self.pool.len() {
             *index = 0;
         }
-        Some(item.to_owned())
+        item.to_owned()
     }
 }
 pub struct IpPool {
-    pub pool_v4: Pool<Ipv4Addr>,
-    pub pool_v6: Pool<Ipv6Addr>,
+    pool_v4: Pool<Ipv4Addr>,
+    pool_v6: Pool<Ipv6Addr>,
+    pub have_v4: bool,
+    pub have_v6: bool,
 }
 impl IpPool {
     pub fn new(pool: Vec<IpAddr>) -> Self {
@@ -57,9 +61,19 @@ impl IpPool {
             }
         }
         Self {
-            pool_v4: Pool::new(v4.into_boxed_slice()),
-            pool_v6: Pool::new(v6.into_boxed_slice()),
+            have_v4: !v4.is_empty(),
+            have_v6: !v6.is_empty(),
+            pool_v4: Pool::new(v4.into_boxed_slice(), Ipv4Addr::UNSPECIFIED),
+            pool_v6: Pool::new(v6.into_boxed_slice(), Ipv6Addr::UNSPECIFIED),
         }
+    }
+    #[inline]
+    pub fn next_v4(&self) -> Ipv4Addr {
+        self.pool_v4.next()
+    }
+    #[inline]
+    pub fn next_v6(&self) -> Ipv6Addr {
+        self.pool_v6.next()
     }
 }
 

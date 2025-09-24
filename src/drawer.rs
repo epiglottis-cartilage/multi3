@@ -4,9 +4,15 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{prelude::*, widgets::Paragraph};
-use std::collections::BTreeMap;
-use std::{io::stdout, time::Instant};
-use std::{net::IpAddr, sync::mpsc, time::Duration};
+use std::{
+    io::stdout,
+    net::{IpAddr, SocketAddr},
+    sync::mpsc,
+    time::Duration,
+    time::Instant,
+};
+
+use crate::event::Protocol;
 
 use super::event::Event;
 
@@ -32,12 +38,13 @@ impl From<State> for &str {
         }
     }
 }
-
+#[allow(dead_code)]
 struct Content {
     time_start: Instant,
     local: IpAddr,
+    protocol: Option<Protocol>,
     bind: Option<IpAddr>,
-    remote: Option<IpAddr>,
+    remote: Option<SocketAddr>,
     uri: Option<String>,
     state: State,
     upload: usize,
@@ -49,6 +56,7 @@ impl Content {
         Self {
             time_start: Instant::now(),
             local,
+            protocol: None,
             bind: None,
             remote: None,
             uri: None,
@@ -81,6 +89,8 @@ impl Content {
 
         let icon: &str = self.state.into();
         res.push(Span::raw(icon));
+        let protocol: &str = self.protocol.as_ref().map(|p| p.display()).unwrap_or("..");
+        res.push(Span::raw(protocol));
 
         // res.push(Span::raw(self.local.to_string()).light_blue());
         if let Some(ip) = &self.bind {
@@ -98,26 +108,28 @@ impl Content {
     }
 }
 
-struct Summary {
-    pub jobs: Option<BTreeMap<usize, Content>>,
-}
+struct Summary(Vec<(usize, Content)>);
 impl Summary {
     pub fn new() -> Self {
-        Self {
-            jobs: Some(BTreeMap::new()),
-        }
+        Self(Vec::new())
     }
     pub fn update(&mut self, id: usize, event: Event) {
         if id != 0 {
             if let Event::Received(ip) = event {
-                self.jobs.as_mut().unwrap().insert(id, Content::new(ip));
+                self.0.push((id, Content::new(ip)));
+                self.0.sort_by_key(|(id, _)| *id);
             } else {
-                let mut index = match self.jobs.as_mut().unwrap().entry(id) {
-                    std::collections::btree_map::Entry::Vacant(_) => return,
-                    std::collections::btree_map::Entry::Occupied(x) => x,
+                let content = match self.0.binary_search_by_key(&id, |(id, _)| *id) {
+                    Ok(index) => &mut self.0[index].1,
+                    Err(_) => return,
                 };
-                let content = index.get_mut();
                 match event {
+                    Event::Received(_) => {
+                        unreachable!()
+                    }
+                    Event::Recognized(p) => {
+                        content.protocol = Some(p);
+                    }
                     Event::Resolved(uri) => {
                         content.uri = Some(uri);
                     }
@@ -142,28 +154,15 @@ impl Summary {
                         content.state = State::Error(Instant::now());
                         content.addon += &e;
                     }
-                    _ => {
-                        unreachable!()
-                    }
                 };
             }
         } else {
-            self.jobs = Some(
-                self.jobs
-                    .take()
-                    .unwrap()
-                    .into_iter()
-                    .filter(|(_id, content)| match content.state {
-                        State::Done(t) | State::Error(t) => t.elapsed() < KEEP_AFTER_DONE,
-                        _ => true,
-                    })
-                    .collect(),
-            );
+            self.0.retain(|(_, content)| match content.state {
+                State::Done(t) | State::Error(t) => t.elapsed() < KEEP_AFTER_DONE,
+                _ => true,
+            });
         }
         // self
-    }
-    pub fn jobs(&self) -> &BTreeMap<usize, Content> {
-        self.jobs.as_ref().unwrap()
     }
 }
 
@@ -182,7 +181,7 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
             width = WIDGETS_SPEED_LEN
         ))
         .light_magenta(),
-        Span::raw("🔰").blue().bold(),
+        Span::raw("🔰🔰").blue().bold(),
     ]
     .into();
 
@@ -203,8 +202,9 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
                 frame.render_widget(
                     Paragraph::new(
                         summary
-                            .jobs()
+                            .0
                             .iter()
+                            .rev()
                             .map(|(_, x)| x.to_line())
                             .collect::<Vec<Line>>(),
                     ),
