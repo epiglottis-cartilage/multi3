@@ -1,14 +1,8 @@
 tui = true # press 'q' to quit in tui
-# ipv6_first = true   # uncomment to enable, false => ipc4 first
+# ipv6_first = true   # uncomment to enable
+host = "0.0.0.0:6210"
+pool = ["10.0.0.1", "10.0.0.2"]
 
 [timeout]
 connect = 5000 #ms
 io = 15000     #ms
-
-[[routing]]
-host = ["0.0.0.0:6210"]
-pool = ['192.168.43.210']
-
-# [[routing]]
-# host = ["0.0.0.0:6211"]
-# pool = ['192.168.1.38']

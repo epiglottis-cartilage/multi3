@@ -4,14 +4,9 @@ use std::{
     sync::Mutex,
     time::Duration,
 };
-// pub type Error = Box<dyn std::error::Error>;
-
-pub struct Routing {
-    pub host: Box<[SocketAddr]>,
-    pub pool: IpPool,
-}
 
 pub struct Config {
+    pub host: SocketAddr,
     pub connect_timeout: Duration,
     pub io_timeout: Duration,
     pub ipv6_first: Option<bool>,
@@ -76,26 +71,20 @@ impl IpPool {
     }
 }
 
-pub fn read_config(file_name: &str) -> Result<(Config, Vec<Routing>)> {
+pub fn read_config(file_name: &str) -> Result<(Config, IpPool)> {
     use std::{fs::File, io::prelude::*};
     let mut buf = String::new();
     let _ = File::open(file_name)?.read_to_string(&mut buf)?;
     let res: toml_file::Config = toml::from_str(&buf)?;
     let config = Config {
+        host: res.host,
         connect_timeout: Duration::from_millis(res.timeout.connect),
         io_timeout: Duration::from_millis(res.timeout.io),
         ipv6_first: res.ipv6_first,
         tui: res.tui,
     };
-    let routing = res
-        .routing
-        .into_iter()
-        .map(|r| Routing {
-            host: r.host.into_boxed_slice(),
-            pool: IpPool::new(r.pool),
-        })
-        .collect::<Vec<_>>();
-    return Ok((config, routing));
+    let pool = IpPool::new(res.pool);
+    return Ok((config, pool));
 }
 mod toml_file {
     // it sucks, but anyway it works
@@ -103,14 +92,9 @@ mod toml_file {
     use std::net::{IpAddr, SocketAddr};
 
     #[derive(Deserialize)]
-    pub struct Routing {
-        pub host: Vec<SocketAddr>,
-        pub pool: Vec<IpAddr>,
-    }
-
-    #[derive(Deserialize)]
     pub struct Config {
-        pub routing: Vec<Routing>,
+        pub host: SocketAddr,
+        pub pool: Vec<IpAddr>,
         pub timeout: Timeout,
         pub tui: bool,
         pub ipv6_first: Option<bool>,

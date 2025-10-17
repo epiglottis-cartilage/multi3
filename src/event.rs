@@ -13,6 +13,7 @@ pub enum Event {
     Download(usize),
     Retry(),
     Error(Cow<'static, str>),
+    None,
 }
 
 #[derive(Debug)]

@@ -1,6 +1,6 @@
 use crossterm::{
     ExecutableCommand,
-    event::{self, KeyCode, KeyEventKind},
+    event::{self as cross_event, KeyCode, KeyEventKind},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{prelude::*, widgets::Paragraph};
@@ -16,6 +16,7 @@ use crate::event::Protocol;
 
 use super::event::Event;
 
+pub const EXIT_KEY: char = 'q';
 pub const FRAME_INTERVAL: Duration = Duration::from_millis(200);
 const WIDGETS_TIME_LEN: usize = 5;
 const WIDGETS_SPEED_LEN: usize = 10;
@@ -154,6 +155,7 @@ impl Summary {
                         content.state = State::Error(Instant::now());
                         content.addon += &e;
                     }
+                    Event::None => {}
                 };
             }
         } else {
@@ -190,8 +192,15 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
         .constraints(vec![Constraint::Length(1), Constraint::Fill(1)]);
 
     let mut summary = Summary::new();
-
+    let mut exit_reason = None;
     for (id, event) in recv {
+        if id == 0
+            && let Event::Error(reason) = event
+        {
+            exit_reason = Some(format!("Exiting since {:?}", reason));
+            break;
+        }
+
         summary.update(id, event);
         if id == 0 {
             terminal.draw(|frame| {
@@ -211,9 +220,10 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
                     out_layout[1],
                 );
             })?;
-            if event::poll(FRAME_INTERVAL)? {
-                if let event::Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
+            if cross_event::poll(Duration::new(0, 0))? {
+                if let cross_event::Event::Key(key) = cross_event::read()? {
+                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char(EXIT_KEY) {
+                        exit_reason = Some(format!("Exiting on user request"));
                         break;
                     }
                 }
@@ -222,5 +232,8 @@ pub fn drawer(recv: mpsc::Receiver<(usize, Event)>) -> std::io::Result<()> {
     }
     stdout().execute(LeaveAlternateScreen)?;
     disable_raw_mode()?;
+    if let Some(reason) = exit_reason {
+        println!("{}", reason);
+    }
     Ok(())
 }
