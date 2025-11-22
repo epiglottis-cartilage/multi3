@@ -11,7 +11,13 @@ use std::{
 };
 
 fn main() {
-    let (cfg, pool) = config::read_config("multi3.toml").unwrap();
+    let (cfg, pool) = match config::read_config("multi3.toml") {
+        Ok(x) => x,
+        Err(e) => {
+            println!("Failed to read config: {}", e);
+            return;
+        }
+    };
 
     let (tx, rx) = mpsc::channel();
 
@@ -44,7 +50,11 @@ fn main() {
                     let mut id = id.lock().unwrap();
                     *id += 1;
                     let id = id.clone();
-                    thread::spawn(move || handler::handle(id, stream, &(cfg, pool), &tx));
+                    thread::spawn(move || {
+                        if let Err(e) = handler::handle(id, stream, &(cfg, pool), &tx) {
+                            println!("{}", e);
+                        }
+                    });
                 }
             }
         });

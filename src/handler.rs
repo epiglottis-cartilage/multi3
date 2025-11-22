@@ -7,9 +7,9 @@ use std::net::{Ipv6Addr, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use crate::Result;
 use crate::config;
 use crate::event::{Event, Protocol};
+use crate::{Error, Result};
 
 type Buffer = Box<[u8]>;
 const SIZE: usize = 40960;
@@ -18,7 +18,7 @@ pub fn handle(
     mut local: TcpStream,
     cfg: &(&config::Config, Arc<config::IpPool>),
     reporter: &mpsc::Sender<(usize, Event)>,
-) {
+) -> Result<()> {
     // eprintln!("[{id}] Recv from {}", local.peer_addr().unwrap());
     local.set_read_timeout(Some(cfg.0.io_timeout)).unwrap();
     let mut buf = Vec::with_capacity(SIZE);
@@ -28,42 +28,38 @@ pub fn handle(
     let mut buf = buf.into_boxed_slice();
 
     if let Ok(n @ 1..) = local.read(&mut buf) {
-        reporter
-            .send((id, Event::Received(local.peer_addr().unwrap().ip())))
-            .unwrap();
+        reporter.send((id, Event::Received(local.peer_addr().unwrap().ip())))?;
         if n < 3 {
             // eprintln!("[{id}] Too short: {:?}", &buf[..n]);
-            reporter
-                .send((
-                    id,
-                    Event::Error(format!("Too short: {:?}", &buf[..n]).into()),
-                ))
-                .unwrap();
-            return;
+            reporter.send((
+                id,
+                Event::Error(format!("Too short: {:?}", &buf[..n]).into()),
+            ))?;
+            return Ok(());
         }
         if let Err(e) = if buf[0] == 0x05 {
             socks_recv(id, local, cfg, (buf, n), reporter)
         } else if str::from_utf8(&buf[..n.min(16)]).is_ok() {
-            let addr = http_addr(&buf).expect("No addr found");
             if buf.starts_with(b"CONNECT") {
+                let addr = http_addr(&buf, 443).expect("No addr found");
                 https_resolved(id, local, addr, cfg, (buf, n), reporter)
             } else {
+                let addr = http_addr(&buf, 80).expect("No addr found");
                 http_resolved(id, local, addr, cfg, (buf, n), reporter)
             }
         } else {
             // eprintln!("[{id}] Unknown protocol: {:?}", &buf[..n]);
-            reporter
-                .send((
-                    id,
-                    Event::Error(format!("Unknown protocol: {:?}", &buf[..n]).into()),
-                ))
-                .unwrap();
-            return;
+            reporter.send((
+                id,
+                Event::Error(format!("Unknown protocol: {:?}", &buf[..n]).into()),
+            ))?;
+            return Ok(());
         } {
             // eprintln!("[{id}] Inner error: {e}");
             let _ = reporter.send((id, Event::Error(e.to_string().into())));
         }
     }
+    Ok(())
 }
 fn http_resolved(
     id: usize,
@@ -74,9 +70,7 @@ fn http_resolved(
     reporter: &mpsc::Sender<(usize, Event)>,
 ) -> Result<()> {
     // eprintln!("[{id}] Http  {addr}");
-    reporter
-        .send((id, Event::Recognized(Protocol::Http)))
-        .unwrap();
+    reporter.send((id, Event::Recognized(Protocol::Http)))?;
     reporter.send((id, Event::Resolved(addr.clone())))?;
 
     let hosts = match lookup_host(&addr, cfg) {
@@ -84,9 +78,7 @@ fn http_resolved(
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n");
             // eprintln!("[{id}] DNS fails: {addr} {e}");
-            reporter
-                .send((id, Event::Error(format!("DNS fails: {e}").into())))
-                .unwrap();
+            reporter.send((id, Event::Error(format!("DNS fails: {e}").into())))?;
             return Ok(());
         }
     };
@@ -101,9 +93,7 @@ fn http_resolved(
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n");
             // eprintln!("[{id}] Failed to connect {addr}: {e}");
-            reporter
-                .send((id, Event::Error(format!("Failed to connect: {e}").into())))
-                .unwrap();
+            reporter.send((id, Event::Error(format!("Failed to connect: {e}").into())))?;
         }
     }
     Ok(())
@@ -117,9 +107,7 @@ fn https_resolved(
     reporter: &mpsc::Sender<(usize, Event)>,
 ) -> Result<()> {
     // eprintln!("[{id}] Https {addr}");
-    reporter
-        .send((id, Event::Recognized(Protocol::Https)))
-        .unwrap();
+    reporter.send((id, Event::Recognized(Protocol::Https)))?;
     reporter.send((id, Event::Resolved(addr.clone())))?;
 
     let hosts = match lookup_host(&addr, cfg) {
@@ -127,9 +115,7 @@ fn https_resolved(
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n");
             // eprintln!("[{id}] DNS fails: {addr} {e}");
-            reporter
-                .send((id, Event::Error(format!("DNS fails: {e}").into())))
-                .unwrap();
+            reporter.send((id, Event::Error(format!("DNS fails: {e}").into())))?;
             return Ok(());
         }
     };
@@ -145,9 +131,7 @@ fn https_resolved(
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n");
             // eprintln!("[{id}] Failed to connect {addr}: {e}");
-            reporter
-                .send((id, Event::Error(format!("Failed to connect: {e}").into())))
-                .unwrap();
+            reporter.send((id, Event::Error(format!("Failed to connect: {e}").into())))?;
         }
     }
     Ok(())
@@ -164,12 +148,10 @@ fn socks_recv(
     if !buf[2..n].contains(&0x00) {
         let _ = local.write_all(&[0x05, 0xff]);
         // eprintln!("[{id}] Invalid Socks5 authentication {:?}", &buf[..n]);
-        reporter
-            .send((
-                id,
-                Event::Error(format!("Invalid authentication: {:?}", &buf[..n]).into()),
-            ))
-            .unwrap();
+        reporter.send((
+            id,
+            Event::Error(format!("Invalid authentication: {:?}", &buf[..n]).into()),
+        ))?;
     } else {
         local.write_all(&[0x05, 0x00])?;
         local.flush()?;
@@ -185,7 +167,7 @@ fn socks_handle_request(
     reporter: &mpsc::Sender<(usize, Event)>,
 ) -> Result<()> {
     let n = local.read(&mut buf)?;
-    let (cmd, addr, _) = socks_prase_request(&buf[..n]).unwrap();
+    let (cmd, addr, _) = socks_prase_request(&buf[..n]).ok_or(Error::InvalidRequest)?;
     match cmd {
         1 => {
             socks_tcp_resolved(id, local, addr, cfg, (buf, n), reporter)?;
@@ -206,9 +188,7 @@ fn socks_tcp_resolved(
     reporter: &mpsc::Sender<(usize, Event)>,
 ) -> Result<()> {
     // eprintln!("[{id}] Tcp -> {addr}");
-    reporter
-        .send((id, Event::Recognized(Protocol::Socks5Tcp)))
-        .unwrap();
+    reporter.send((id, Event::Recognized(Protocol::Socks5Tcp)))?;
     reporter.send((id, Event::Resolved(addr.clone())))?;
 
     let hosts = match lookup_host(&addr, cfg) {
@@ -217,9 +197,7 @@ fn socks_tcp_resolved(
             buf[1] = 0x04;
             let _ = local.write_all(&buf[..n]);
             // eprintln!("[{id}] DNS fails: {addr} {e}");
-            reporter
-                .send((id, Event::Error(format!("DNS fails: {e}").into())))
-                .unwrap();
+            reporter.send((id, Event::Error(format!("DNS fails: {e}").into())))?;
             return Ok(());
         }
     };
@@ -235,9 +213,7 @@ fn socks_tcp_resolved(
             buf[1] = 0x04;
             let _ = local.write_all(&buf[..n]);
             // eprintln!("[{id}] Failed to connect {addr}: {e}");
-            reporter
-                .send((id, Event::Error(format!("Failed to connect: {e}").into())))
-                .unwrap();
+            reporter.send((id, Event::Error(format!("Failed to connect: {e}").into())))?;
         }
     }
     Ok(())
@@ -255,11 +231,9 @@ fn socks_udp_resolved(
     } else {
         UdpSocket::bind((cfg.1.next_v4(), 0))?
     };
-    let remote_bind = socket.local_addr().unwrap();
+    let remote_bind = socket.local_addr()?;
     // eprintln!("[{id}] Udp <- {}", remote_bind);
-    reporter
-        .send((id, Event::Recognized(Protocol::Socks5Udp)))
-        .unwrap();
+    reporter.send((id, Event::Recognized(Protocol::Socks5Udp)))?;
 
     let n = build_socks_response(0, remote_bind, &mut buf);
     local.write_all(&buf[..n])?;
@@ -284,19 +258,17 @@ fn socks_udp_relay(
         if local.is_none() {
             local = Some(src);
             // eprintln!("[{id}] {} <-> ...", src);
-            reporter
-                .send((
-                    id,
-                    Event::Connected(src.ip(), (Ipv4Addr::UNSPECIFIED, 0).into()),
-                ))
-                .unwrap();
+            reporter.send((
+                id,
+                Event::Connected(src.ip(), (Ipv4Addr::UNSPECIFIED, 0).into()),
+            ))?;
         }
-        let local = local.unwrap();
+        let local = local.ok_or(Error::PoolEmpty)?;
         if src == local {
             if n < 10 || buf[2] != 0 {
                 continue;
             }
-            let (addr, d) = socks_prase_host(&buf[3..n]).unwrap();
+            let (addr, d) = socks_prase_host(&buf[3..n]).ok_or(Error::InvalidRequest)?;
             socket.send_to(&buf[d..n], &addr)?;
         } else {
             socket.send_to(&build_socks_udp(src, &buf[..n]), local)?;
@@ -320,17 +292,15 @@ fn tcp_relay(
     //     remote.local_addr().unwrap(),
     //     remote.peer_addr().unwrap()
     // );
-    reporter
-        .send((
-            id,
-            Event::Connected(
-                remote.local_addr().unwrap().ip(),
-                remote.peer_addr().unwrap(),
-            ),
-        ))
-        .unwrap();
-    let local_ = local.try_clone().unwrap();
-    let remote_ = remote.try_clone().unwrap();
+    reporter.send((
+        id,
+        Event::Connected(
+            remote.local_addr().unwrap().ip(),
+            remote.peer_addr().unwrap(),
+        ),
+    ))?;
+    let local_ = local.try_clone()?;
+    let remote_ = remote.try_clone()?;
     let reporter_ = reporter.clone();
 
     let handle = std::thread::spawn(move || {
@@ -412,7 +382,7 @@ fn build_socks_udp(addr: SocketAddr, data: &[u8]) -> Box<[u8]> {
     }
     pack
 }
-fn http_addr(buffer: &[u8]) -> Option<String> {
+fn http_addr(buffer: &[u8], default_port: u16) -> Option<String> {
     let request = String::from_utf8_lossy(buffer);
     let mut request_split = request.split_ascii_whitespace();
     let path = request_split.nth(1);
@@ -422,7 +392,7 @@ fn http_addr(buffer: &[u8]) -> Option<String> {
         .or(path)?
         .to_owned();
     if (addr.starts_with('[') && addr.ends_with(']')) || (!addr.contains(':')) {
-        addr += ":80";
+        addr += &format!(":{default_port}");
     }
     Some(addr)
 }
@@ -494,7 +464,7 @@ fn connect(
         }
         if let Ok(()) = builder.connect_timeout(&host.into(), cfg.0.connect_timeout) {
             let remote: TcpStream = builder.into();
-            remote.set_read_timeout(Some(cfg.0.io_timeout)).unwrap();
+            remote.set_read_timeout(Some(cfg.0.io_timeout))?;
             return Ok(remote);
         } else {
             reporter()?;
