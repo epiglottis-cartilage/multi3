@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, derive_more::From)]
@@ -8,7 +10,7 @@ pub enum Error {
     ParseError(toml::de::Error),
     ChannelError,
     PoolEmpty,
-    InvalidRequest,
+    InvalidRequest(Cow<'static, str>),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -17,7 +19,7 @@ impl std::fmt::Display for Error {
             Self::ParseError(error) => write!(f, "Parse error: {}", error),
             Self::ChannelError => write!(f, "Channel error"),
             Self::PoolEmpty => write!(f, "Connection pool is empty"),
-            Self::InvalidRequest => write!(f, "Invalid request"),
+            Self::InvalidRequest(s) => write!(f, "Invalid request in {s}"),
         }
     }
 }

@@ -1,7 +1,6 @@
-use std::{
-    borrow::Cow,
-    net::{IpAddr, SocketAddr},
-};
+use std::net::{IpAddr, SocketAddr};
+
+use crate::Error;
 #[derive(Debug)]
 pub enum Event {
     Received(IpAddr),
@@ -12,7 +11,7 @@ pub enum Event {
     Upload(usize),
     Download(usize),
     Retry(),
-    Error(Cow<'static, str>),
+    Error(Error),
     None,
 }
 
@@ -26,8 +25,8 @@ pub enum Protocol {
 impl Protocol {
     pub fn display(&self) -> &str {
         match self {
-            Protocol::Http =>      "    http://",
-            Protocol::Https =>     "   https://",
+            Protocol::Http => "    http://",
+            Protocol::Https => "   https://",
             Protocol::Socks5Tcp => "T socks5://",
             Protocol::Socks5Udp => "U socks5://",
         }

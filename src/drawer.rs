@@ -153,7 +153,7 @@ impl Summary {
                     }
                     Event::Error(e) => {
                         content.state = State::Error(Instant::now());
-                        content.addon += &e;
+                        content.addon += &e.to_string();
                     }
                     Event::None => {}
                 };

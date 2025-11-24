@@ -33,7 +33,9 @@ pub fn handle(
             // eprintln!("[{id}] Too short: {:?}", &buf[..n]);
             reporter.send((
                 id,
-                Event::Error(format!("Too short: {:?}", &buf[..n]).into()),
+                Event::Error(Error::InvalidRequest(
+                    format!("Too short: {:?}", &buf[..n]).into(),
+                )),
             ))?;
             return Ok(());
         }
@@ -51,12 +53,14 @@ pub fn handle(
             // eprintln!("[{id}] Unknown protocol: {:?}", &buf[..n]);
             reporter.send((
                 id,
-                Event::Error(format!("Unknown protocol: {:?}", &buf[..n]).into()),
+                Event::Error(Error::InvalidRequest(
+                    format!("Unknown protocol: {:?}", &buf[..n]).into(),
+                )),
             ))?;
             return Ok(());
         } {
             // eprintln!("[{id}] Inner error: {e}");
-            let _ = reporter.send((id, Event::Error(e.to_string().into())));
+            let _ = reporter.send((id, Event::Error(e.into())));
         }
     }
     Ok(())
@@ -78,7 +82,7 @@ fn http_resolved(
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n");
             // eprintln!("[{id}] DNS fails: {addr} {e}");
-            reporter.send((id, Event::Error(format!("DNS fails: {e}").into())))?;
+            reporter.send((id, Event::Error(e.into())))?;
             return Ok(());
         }
     };
@@ -93,7 +97,7 @@ fn http_resolved(
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n");
             // eprintln!("[{id}] Failed to connect {addr}: {e}");
-            reporter.send((id, Event::Error(format!("Failed to connect: {e}").into())))?;
+            reporter.send((id, Event::Error(e.into())))?;
         }
     }
     Ok(())
@@ -115,7 +119,7 @@ fn https_resolved(
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n");
             // eprintln!("[{id}] DNS fails: {addr} {e}");
-            reporter.send((id, Event::Error(format!("DNS fails: {e}").into())))?;
+            reporter.send((id, Event::Error(e.into())))?;
             return Ok(());
         }
     };
@@ -131,7 +135,7 @@ fn https_resolved(
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n");
             // eprintln!("[{id}] Failed to connect {addr}: {e}");
-            reporter.send((id, Event::Error(format!("Failed to connect: {e}").into())))?;
+            reporter.send((id, Event::Error(e.into())))?;
         }
     }
     Ok(())
@@ -150,7 +154,9 @@ fn socks_recv(
         // eprintln!("[{id}] Invalid Socks5 authentication {:?}", &buf[..n]);
         reporter.send((
             id,
-            Event::Error(format!("Invalid authentication: {:?}", &buf[..n]).into()),
+            Event::Error(Error::InvalidRequest(
+                format!("Invalid authentication: {:?}", &buf[..n]).into(),
+            )),
         ))?;
     } else {
         local.write_all(&[0x05, 0x00])?;
@@ -167,7 +173,8 @@ fn socks_handle_request(
     reporter: &mpsc::Sender<(usize, Event)>,
 ) -> Result<()> {
     let n = local.read(&mut buf)?;
-    let (cmd, addr, _) = socks_prase_request(&buf[..n]).ok_or(Error::InvalidRequest)?;
+    let (cmd, addr, _) = socks_prase_request(&buf[..n])
+        .ok_or_else(|| Error::InvalidRequest("No host in request".into()))?;
     match cmd {
         1 => {
             socks_tcp_resolved(id, local, addr, cfg, (buf, n), reporter)?;
@@ -197,7 +204,7 @@ fn socks_tcp_resolved(
             buf[1] = 0x04;
             let _ = local.write_all(&buf[..n]);
             // eprintln!("[{id}] DNS fails: {addr} {e}");
-            reporter.send((id, Event::Error(format!("DNS fails: {e}").into())))?;
+            reporter.send((id, Event::Error(e.into())))?;
             return Ok(());
         }
     };
@@ -213,7 +220,7 @@ fn socks_tcp_resolved(
             buf[1] = 0x04;
             let _ = local.write_all(&buf[..n]);
             // eprintln!("[{id}] Failed to connect {addr}: {e}");
-            reporter.send((id, Event::Error(format!("Failed to connect: {e}").into())))?;
+            reporter.send((id, Event::Error(e.into())))?;
         }
     }
     Ok(())
@@ -268,7 +275,8 @@ fn socks_udp_relay(
             if n < 10 || buf[2] != 0 {
                 continue;
             }
-            let (addr, d) = socks_prase_host(&buf[3..n]).ok_or(Error::InvalidRequest)?;
+            let (addr, d) = socks_prase_host(&buf[3..n])
+                .ok_or_else(|| Error::InvalidRequest("No host in request".into()))?;
             socket.send_to(&buf[d..n], &addr)?;
         } else {
             socket.send_to(&build_socks_udp(src, &buf[..n]), local)?;

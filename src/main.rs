@@ -33,13 +33,7 @@ fn main() {
             let listener = match TcpListener::bind(&cfg.host) {
                 Ok(listener) => listener,
                 Err(e) => {
-                    tx.send((
-                        0,
-                        event::Event::Error(
-                            format!("Failed to bind to {}: {}", cfg.host, e).into(),
-                        ),
-                    ))
-                    .unwrap();
+                    tx.send((0, event::Event::Error(e.into()))).unwrap();
                     return;
                 }
             };
