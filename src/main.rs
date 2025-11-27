@@ -1,38 +1,18 @@
+#![feature(can_vector)]
 mod config;
 mod drawer;
 mod error;
 mod event;
 mod handler;
 mod tls;
+mod utils;
 pub use error::*;
 use std::{
-    io::prelude::*,
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     sync::{Arc, Mutex, mpsc},
     thread,
 };
-fn test() {
-    // Allow using SSLKEYLOGFILE.
 
-    let server_name = "www.rust-lang.org".try_into().unwrap();
-    let mut conn = rustls::ClientConnection::new(tls::TLS_CLIENT.clone(), server_name).unwrap();
-    let mut sock = TcpStream::connect("www.rust-lang.org:443").unwrap();
-    let mut tls = rustls::Stream::new(&mut conn, &mut sock);
-    tls.write_all(
-        concat!(
-            "GET / HTTP/1.1\r\n",
-            "Host: www.rust-lang.org\r\n",
-            "Connection: close\r\n",
-            "Accept-Encoding: identity\r\n",
-            "\r\n"
-        )
-        .as_bytes(),
-    )
-    .unwrap();
-    let mut plaintext = Vec::new();
-    tls.read_to_end(&mut plaintext).unwrap();
-    std::io::stdout().write_all(&plaintext).unwrap();
-}
 fn main() {
     let (cfg, pool) = match config::read_config("multi3.toml") {
         Ok(x) => x,

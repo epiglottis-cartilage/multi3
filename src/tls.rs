@@ -1,9 +1,9 @@
 use crate::Result;
 use rustls::{
-    ClientConfig, ServerConfig, ServerConnection,
-    pki_types::{CertificateDer, Der, PrivateKeyDer, pem::PemObject},
+    ClientConfig, ClientConnection, ServerConfig, ServerConnection, Stream,
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject},
 };
-use std::{cell::LazyCell, net::TcpStream, sync::Arc};
+use std::{cell::LazyCell, io::prelude::*, net::TcpStream, sync::Arc};
 
 pub const TLS_CLIENT: LazyCell<Arc<ClientConfig>> = LazyCell::new(|| {
     let root_store =
@@ -29,15 +29,47 @@ pub const TLS_SERVER: LazyCell<Arc<ServerConfig>> = LazyCell::new(|| {
     Arc::new(config)
 });
 
-pub struct TlsTcpStream {
-    socket: TcpStream,
-    tls_conn: ServerConnection,
+pub enum WarpedStream {
+    Direct(TcpStream),
+    Server(TcpStream, ServerConnection),
+    Client(TcpStream, ClientConnection),
 }
+impl WarpedStream {
+    pub fn new(stream: TcpStream) -> Self {
+        Self::Direct(stream)
+    }
+    pub fn new_server(remote: TcpStream) -> Result<Self> {
+        let conn = ServerConnection::new(TLS_SERVER.clone())?;
+        Ok(WarpedStream::Server(remote, conn))
+    }
+    pub fn new_client(remote: TcpStream, name: ServerName<'static>) -> Result<Self> {
+        let conn = ClientConnection::new(TLS_CLIENT.clone(), name).unwrap();
+        Ok(WarpedStream::Client(remote, conn))
+    }
+}
+impl Read for WarpedStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            WarpedStream::Direct(stream) => stream.read(buf),
+            WarpedStream::Server(stream, conn) => Stream::new(conn, stream).read(buf),
+            WarpedStream::Client(stream, conn) => Stream::new(conn, stream).read(buf),
+        }
+    }
+}
+impl Write for WarpedStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            WarpedStream::Direct(stream) => stream.write(buf),
+            WarpedStream::Server(stream, conn) => Stream::new(conn, stream).write(buf),
+            WarpedStream::Client(stream, conn) => Stream::new(conn, stream).write(buf),
+        }
+    }
 
-pub fn attach(remote: TcpStream) -> Result<TlsTcpStream> {
-    let conn: rustls::ServerConnection = rustls::ServerConnection::new(TLS_SERVER.clone())?;
-    Ok(TlsTcpStream {
-        socket: remote,
-        tls_conn: conn,
-    })
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            WarpedStream::Direct(stream) => stream.flush(),
+            WarpedStream::Server(stream, conn) => Stream::new(conn, stream).flush(),
+            WarpedStream::Client(stream, conn) => Stream::new(conn, stream).flush(),
+        }
+    }
 }

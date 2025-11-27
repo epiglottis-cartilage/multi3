@@ -7,8 +7,12 @@ use std::net::{Ipv6Addr, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::mpsc;
 
+use rustls::pki_types::ServerName;
+
 use crate::config;
 use crate::event::{Event, Protocol};
+use crate::tls::WarpedStream;
+use crate::utils::{ReadHalf, WriteHalf, split};
 use crate::{Error, Result};
 
 type Buffer = Box<[u8]>;
@@ -92,7 +96,9 @@ fn http_resolved(
     }) {
         Ok(mut remote) => {
             remote.write_all(&buf[..n])?;
-            tcp_relay(id, local, remote, buf.clone(), buf, reporter)?;
+            let (lr, lw) = split(WarpedStream::new(local));
+            let (rr, rw) = split(WarpedStream::new(remote));
+            tcp_relay(id, lr, lw, rr, rw, buf.clone(), buf, reporter)?;
         }
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n");
@@ -123,14 +129,18 @@ fn https_resolved(
             return Ok(());
         }
     };
-
-    match connect(hosts, cfg, || {
+    let host_name = &addr[..*addr.find(':').iter().last().unwrap()];
+    match connect_tls(host_name, hosts, cfg, || {
         reporter.send((id, Event::Retry())).map_err(Into::into)
     }) {
         Ok(remote) => {
             local.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
             local.flush()?;
-            tcp_relay(id, local, remote, buf.clone(), buf, reporter)?;
+            let local = WarpedStream::new_server(local)?;
+
+            let (lr, lw) = split(local);
+            let (rr, rw) = split(remote);
+            tcp_relay(id, lr, lw, rr, rw, buf.clone(), buf, reporter)?;
         }
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n");
@@ -214,7 +224,9 @@ fn socks_tcp_resolved(
         Ok(remote) => {
             let n = build_socks_response(0, remote.local_addr().unwrap(), &mut buf);
             let _ = local.write_all(&buf[..n]);
-            tcp_relay(id, local, remote, buf.clone(), buf, reporter)?;
+            let (lr, lw) = split(WarpedStream::new(local));
+            let (rr, rw) = split(WarpedStream::new(remote));
+            tcp_relay(id, lr, lw, rr, rw, buf.clone(), buf, reporter)?;
         }
         Err(e) => {
             buf[1] = 0x04;
@@ -256,21 +268,20 @@ fn socks_udp_relay(
 ) -> Result<()> {
     let mut local: Option<SocketAddr> = None;
     ctl.set_nonblocking(true)?;
+    // socket.set_read_timeout()
     loop {
         match ctl.peek(&mut [0]) {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             _ => break,
         }
         let (n, src) = socket.recv_from(&mut buf)?;
-        if local.is_none() {
-            local = Some(src);
-            // eprintln!("[{id}] {} <-> ...", src);
-            reporter.send((
-                id,
-                Event::Connected(src.ip(), (Ipv4Addr::UNSPECIFIED, 0).into()),
-            ))?;
-        }
-        let local = local.ok_or(Error::PoolEmpty)?;
+        let local = match local {
+            Some(x) => x,
+            ref mut l @ None => {
+                *l = Some(src);
+                src
+            }
+        };
         if src == local {
             if n < 10 || buf[2] != 0 {
                 continue;
@@ -289,8 +300,10 @@ fn socks_udp_relay(
 
 fn tcp_relay(
     id: usize,
-    local: TcpStream,
-    remote: TcpStream,
+    local_r: ReadHalf,
+    local_w: WriteHalf,
+    remote_r: ReadHalf,
+    remote_w: WriteHalf,
     buf_up: Buffer,
     buf_down: Buffer,
     reporter: &mpsc::Sender<(usize, Event)>,
@@ -300,42 +313,41 @@ fn tcp_relay(
     //     remote.local_addr().unwrap(),
     //     remote.peer_addr().unwrap()
     // );
-    reporter.send((
-        id,
-        Event::Connected(
-            remote.local_addr().unwrap().ip(),
-            remote.peer_addr().unwrap(),
-        ),
-    ))?;
-    let local_ = local.try_clone()?;
-    let remote_ = remote.try_clone()?;
-    let reporter_ = reporter.clone();
+    // reporter.send((
+    //     id,
+    //     Event::Connected(
+    //         remote.local_addr().unwrap().ip(),
+    //         remote.peer_addr().unwrap(),
+    //     ),
+    // ))?;
 
+    let reporter_ = reporter.clone();
     let handle = std::thread::spawn(move || {
-        copy(local_, remote_, buf_up, |x| {
+        copy(local_r, remote_w, buf_up, |x| {
             reporter_.send((id, Event::Upload(x))).map_err(Into::into)
         })
     });
-    copy(remote, local, buf_down, move |x| {
+
+    copy(remote_r, local_w, buf_down, move |x| {
         reporter.send((id, Event::Download(x))).map_err(Into::into)
     })?;
     handle.join().unwrap()?;
 
-    // eprintln!("[{id}] Done",);
+    eprintln!("[{id}] Done",);
     reporter.send((id, Event::Done()))?;
     Ok(())
 }
 fn copy(
-    mut from: TcpStream,
-    mut to: TcpStream,
+    mut from: ReadHalf,
+    mut to: WriteHalf,
     mut buf: Buffer,
     reporter: impl Fn(usize) -> Result<()>,
 ) -> Result<()> {
     loop {
-        match from.read(&mut buf) {
+        match from.inner().read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                to.write_all(&buf[..n])?;
+                to.inner().write_all(&buf[..n])?;
                 reporter(n)?;
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
@@ -345,7 +357,7 @@ fn copy(
             }
         }
     }
-    let _ = to.shutdown(std::net::Shutdown::Both);
+    // let _ = to.shutdown(std::net::Shutdown::Both);
     Ok(())
 }
 fn build_socks_response(cmd: u8, addr: SocketAddr, buf: &mut Buffer) -> usize {
@@ -474,6 +486,41 @@ fn connect(
             let remote: TcpStream = builder.into();
             remote.set_read_timeout(Some(cfg.0.io_timeout))?;
             return Ok(remote);
+        } else {
+            reporter()?;
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::HostUnreachable,
+        "All hosts are unreachable",
+    )
+    .into())
+}
+
+fn connect_tls(
+    host_name: &str,
+    hosts: Vec<SocketAddr>,
+    cfg: &(&config::Config, Arc<config::IpPool>),
+    reporter: impl Fn() -> Result<()>,
+) -> Result<WarpedStream> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    for host in hosts {
+        let builder;
+        match host {
+            SocketAddr::V4(_) => {
+                builder = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+                builder.bind(&SocketAddr::new(cfg.1.next_v4().into(), 0).into())?;
+            }
+            SocketAddr::V6(_) => {
+                builder = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+                builder.bind(&SocketAddr::new(cfg.1.next_v6().into(), 0).into())?;
+            }
+        }
+        if let Ok(()) = builder.connect_timeout(&host.into(), cfg.0.connect_timeout) {
+            let remote: TcpStream = builder.into();
+            remote.set_read_timeout(Some(cfg.0.io_timeout))?;
+            let server_name = ServerName::try_from(host_name).unwrap();
+            return WarpedStream::new_client(remote, server_name.to_owned());
         } else {
             reporter()?;
         }
