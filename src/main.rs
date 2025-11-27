@@ -1,4 +1,4 @@
-#![feature(can_vector)]
+#![feature(iterator_try_collect)]
 mod config;
 mod drawer;
 mod error;
@@ -48,7 +48,7 @@ fn main() {
                     *id += 1;
                     let id = id.clone();
                     thread::spawn(move || {
-                        if let Err(e) = handler::handle(id, stream, &(cfg, pool), &tx) {
+                        if let Err(e) = handler::handle(id, stream.into(), &(cfg, pool), &tx) {
                             println!("{}", e);
                         }
                     });

@@ -3,7 +3,13 @@ use rustls::{
     ClientConfig, ClientConnection, ServerConfig, ServerConnection, Stream,
     pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject},
 };
-use std::{cell::LazyCell, io::prelude::*, net::TcpStream, sync::Arc};
+use std::{
+    cell::LazyCell,
+    io::prelude::*,
+    net::{SocketAddr, TcpStream},
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 pub const TLS_CLIENT: LazyCell<Arc<ClientConfig>> = LazyCell::new(|| {
     let root_store =
@@ -29,10 +35,16 @@ pub const TLS_SERVER: LazyCell<Arc<ServerConfig>> = LazyCell::new(|| {
     Arc::new(config)
 });
 
+#[derive(Debug)]
 pub enum WarpedStream {
     Direct(TcpStream),
     Server(TcpStream, ServerConnection),
     Client(TcpStream, ClientConnection),
+}
+impl From<TcpStream> for WarpedStream {
+    fn from(value: TcpStream) -> Self {
+        Self::Direct(value)
+    }
 }
 impl WarpedStream {
     pub fn new(stream: TcpStream) -> Self {
@@ -45,6 +57,22 @@ impl WarpedStream {
     pub fn new_client(remote: TcpStream, name: ServerName<'static>) -> Result<Self> {
         let conn = ClientConnection::new(TLS_CLIENT.clone(), name).unwrap();
         Ok(WarpedStream::Client(remote, conn))
+    }
+    pub fn local_addr(&self) -> SocketAddr {
+        match self {
+            WarpedStream::Direct(stream)
+            | WarpedStream::Server(stream, _)
+            | WarpedStream::Client(stream, _) => stream.local_addr(),
+        }
+        .unwrap()
+    }
+    pub fn peer_addr(&self) -> SocketAddr {
+        match self {
+            WarpedStream::Direct(stream)
+            | WarpedStream::Server(stream, _)
+            | WarpedStream::Client(stream, _) => stream.peer_addr(),
+        }
+        .unwrap()
     }
 }
 impl Read for WarpedStream {
@@ -70,6 +98,25 @@ impl Write for WarpedStream {
             WarpedStream::Direct(stream) => stream.flush(),
             WarpedStream::Server(stream, conn) => Stream::new(conn, stream).flush(),
             WarpedStream::Client(stream, conn) => Stream::new(conn, stream).flush(),
+        }
+    }
+}
+impl Deref for WarpedStream {
+    type Target = TcpStream;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            WarpedStream::Direct(stream)
+            | WarpedStream::Server(stream, _)
+            | WarpedStream::Client(stream, _) => stream,
+        }
+    }
+}
+impl DerefMut for WarpedStream {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            WarpedStream::Direct(stream)
+            | WarpedStream::Server(stream, _)
+            | WarpedStream::Client(stream, _) => stream,
         }
     }
 }
