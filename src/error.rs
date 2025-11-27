@@ -8,6 +8,8 @@ pub enum Error {
     IoError(std::io::Error),
     #[from]
     ParseError(toml::de::Error),
+    #[from]
+    TlsError(rustls::Error),
     ChannelError,
     PoolEmpty,
     InvalidRequest(Cow<'static, str>),
@@ -17,6 +19,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::IoError(error) => write!(f, "IO error: {}", error.kind()),
             Self::ParseError(error) => write!(f, "Parse error: {}", error),
+            Self::TlsError(error) => write!(f, "TLS error: {}", error),
             Self::ChannelError => write!(f, "Channel error"),
             Self::PoolEmpty => write!(f, "Connection pool is empty"),
             Self::InvalidRequest(s) => write!(f, "Invalid request in {s}"),

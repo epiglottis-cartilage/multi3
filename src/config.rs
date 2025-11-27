@@ -1,5 +1,6 @@
 use crate::Result;
 use std::{
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Mutex,
     time::Duration,
@@ -11,6 +12,8 @@ pub struct Config {
     pub io_timeout: Duration,
     pub ipv6_first: Option<bool>,
     pub tui: bool,
+    pub boost: u8,
+    pub sni_rewrite: HashMap<String, String>,
 }
 struct Pool<T: Clone> {
     default: T,
@@ -82,6 +85,8 @@ pub fn read_config(file_name: &str) -> Result<(Config, IpPool)> {
         io_timeout: Duration::from_millis(res.timeout.io),
         ipv6_first: res.ipv6_first,
         tui: res.tui,
+        boost: res.boost.max(1),
+        sni_rewrite: res.sni_rewrite,
     };
     let pool = IpPool::new(res.pool);
     return Ok((config, pool));
@@ -98,6 +103,8 @@ mod toml_file {
         pub timeout: Timeout,
         pub tui: bool,
         pub ipv6_first: Option<bool>,
+        pub boost: u8,
+        pub sni_rewrite: std::collections::HashMap<String, String>,
     }
 
     #[derive(Deserialize)]

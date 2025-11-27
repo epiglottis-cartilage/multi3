@@ -12,6 +12,9 @@ toml = "*"
 serde = { version = "*", features = ["derive"] }
 crossterm = "*"
 ratatui = "*"
+rustls = "*"
+webpki = "*"
+webpki-roots = "*"
 
 [profile.release]
 opt-level = 's'
