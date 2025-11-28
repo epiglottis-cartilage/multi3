@@ -5,8 +5,10 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
+use tokio_rustls::rustls::pki_types::ServerName;
 
 use crate::config;
+use crate::tls;
 use crate::{Error, Result};
 
 type Buffer = Box<[u8]>;
@@ -14,7 +16,7 @@ const SIZE: usize = 40960;
 
 pub async fn handle(id: u64, local: TcpStream, config: &config::HandlerConfig) {
     if let Err(e) = handle_inner(id, local, config).await {
-        println!("{}", e);
+        println!("[{id:^5}] {e}");
     }
 }
 pub async fn handle_inner(
@@ -22,7 +24,7 @@ pub async fn handle_inner(
     mut local: TcpStream,
     config: &config::HandlerConfig,
 ) -> Result<()> {
-    eprintln!("[{id:<4}] Recv from {}", local.peer_addr().unwrap());
+    eprintln!("[{id:^5}] Recv from {}", local.peer_addr().unwrap());
 
     let mut buf = Vec::with_capacity(SIZE);
     unsafe {
@@ -63,7 +65,7 @@ async fn http_resolved(
     config: &config::HandlerConfig,
     (buf, n): (Buffer, usize),
 ) -> Result<()> {
-    eprintln!("[{id:<4}] Http  {addr}");
+    eprintln!("[{id:^5}] Http  {addr}");
 
     let hosts = match lookup_host(&addr, config).await {
         Ok(hosts) => hosts,
@@ -73,10 +75,12 @@ async fn http_resolved(
         }
     };
 
-    match connect(hosts, config).await {
-        Ok(mut remote) => {
+    match connect(id, None, hosts, config).await {
+        Ok((mut remote, local_addr, peer_addr)) => {
             remote.write_all(&buf[..n]).await?;
-            tcp_relay(id, local, remote).await?;
+
+            eprintln!("[{id:^5}] {} <-> {}", local_addr, peer_addr);
+            tcp_relay(id, tls::Stream::new_direct(local), remote).await?;
         }
         Err(e) => {
             let _ = local
@@ -94,7 +98,7 @@ async fn https_resolved(
     config: &config::HandlerConfig,
     (_buf, _n): (Buffer, usize),
 ) -> Result<()> {
-    eprintln!("[{id:<4}] Https {addr}");
+    eprintln!("[{id:^5}] Https {addr}");
 
     let hosts = match lookup_host(&addr, config).await {
         Ok(hosts) => hosts,
@@ -104,12 +108,19 @@ async fn https_resolved(
         }
     };
 
-    match connect(hosts, config).await {
-        Ok(remote) => {
+    let host_name = &addr[..addr.find(':').unwrap()];
+    match connect(id, Some(host_name), hosts, config).await {
+        Ok((remote, local_addr, peer_addr)) => {
             local
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await?;
             local.flush().await?;
+            let local = if config.boost > 1 {
+                tls::Stream::new_server(local, host_name).await?
+            } else {
+                tls::Stream::new_direct(local)
+            };
+            eprintln!("[{id:^5}] {} <-> {}", local_addr, peer_addr);
             tcp_relay(id, local, remote).await?;
         }
         Err(e) => {
@@ -127,7 +138,7 @@ async fn socks_recv(
     config: &config::HandlerConfig,
     (buf, n): (Buffer, usize),
 ) -> Result<()> {
-    eprintln!("[{id:<4}] Socks5");
+    eprintln!("[{id:^5}] Socks5");
     if !buf[2..n].contains(&0x00) {
         let _ = local.write_all(&[0x05, 0xff]).await;
         Err(Error::InvalidRequest(
@@ -166,7 +177,7 @@ async fn socks_tcp_resolved(
     config: &config::HandlerConfig,
     (mut buf, n): (Buffer, usize),
 ) -> Result<()> {
-    eprintln!("[{id:<4}] Tcp -> {addr}");
+    eprintln!("[{id:^5}] Tcp -> {addr}");
 
     let hosts = match lookup_host(&addr, config).await {
         Ok(hosts) => hosts,
@@ -176,11 +187,12 @@ async fn socks_tcp_resolved(
             return Err(e);
         }
     };
-    match connect(hosts, config).await {
-        Ok(remote) => {
-            let n = build_socks_response(0, remote.local_addr().unwrap(), &mut buf);
+    match connect(id, None, hosts, config).await {
+        Ok((remote, local_addr, peer_addr)) => {
+            let n = build_socks_response(0, local_addr, &mut buf);
             let _ = local.write_all(&buf[..n]).await;
-            tcp_relay(id, local, remote).await?;
+            eprintln!("[{id:^5}] {} <-> {}", local_addr, peer_addr);
+            tcp_relay(id, tls::Stream::new_direct(local), remote).await?;
         }
         Err(e) => {
             buf[1] = 0x04;
@@ -203,7 +215,7 @@ async fn socks_udp_resolved(
         tokio::net::UdpSocket::bind((config.next_v4(), 0)).await?
     };
     let remote_bind = socket.local_addr().unwrap();
-    eprintln!("[{id:<4}] Udp <- {}", remote_bind);
+    eprintln!("[{id:^5}] Udp <- {}", remote_bind);
 
     let n = build_socks_response(0, remote_bind, &mut buf);
     local.write_all(&buf[..n]).await?;
@@ -226,7 +238,7 @@ async fn socks_udp_relay(
         let (n, src) = socket.recv_from(&mut buf).await?;
         if local.is_none() {
             local = Some(src);
-            eprintln!("[{id:<4}] {} <-> ...", src);
+            eprintln!("[{id:^5}] {} <-> ...", src);
         }
         let local = local.unwrap();
         if src == local {
@@ -241,18 +253,24 @@ async fn socks_udp_relay(
                 .await?;
         }
     }
-    eprintln!("[{id:<4}] Done");
+    eprintln!("[{id:^5}] Done");
     Ok(())
 }
 
-async fn tcp_relay(id: u64, mut local: TcpStream, mut remote: TcpStream) -> Result<()> {
-    eprintln!(
-        "[{id:<4}] {} <-> {}",
-        remote.local_addr().unwrap(),
-        remote.peer_addr().unwrap()
-    );
-    let _ = tokio::io::copy_bidirectional_with_sizes(&mut local, &mut remote, SIZE, SIZE).await;
-    eprintln!("[{id:<4}] Done",);
+async fn tcp_relay(id: u64, local: tls::Stream, remote: tls::Stream) -> Result<()> {
+    use tls::Stream;
+    match (local, remote) {
+        (Stream::Direct(mut local), Stream::Direct(mut remote)) => {
+            let _ =
+                tokio::io::copy_bidirectional_with_sizes(&mut local, &mut remote, SIZE, SIZE).await;
+        }
+        (Stream::Tls(mut local), Stream::Tls(mut remote)) => {
+            let _ =
+                tokio::io::copy_bidirectional_with_sizes(&mut local, &mut remote, SIZE, SIZE).await;
+        }
+        _ => unreachable!(),
+    }
+    eprintln!("[{id:^5}] Done",);
     Ok(())
 }
 fn build_socks_response(cmd: u8, addr: SocketAddr, buf: &mut Buffer) -> usize {
@@ -358,10 +376,12 @@ async fn lookup_host(addr: &str, config: &config::HandlerConfig) -> Result<Vec<S
     }
 }
 async fn connect(
+    id: u64,
+    host_name: Option<&str>,
     hosts: Vec<SocketAddr>,
     config: &config::HandlerConfig,
-) -> Result<tokio::net::TcpStream> {
-    for host in hosts {
+) -> Result<(tls::Stream, SocketAddr, SocketAddr)> {
+    let get_builder = |host: &SocketAddr| {
         let builder;
         match host {
             SocketAddr::V4(_) => {
@@ -373,8 +393,49 @@ async fn connect(
                 builder.bind((config.next_v6(), 0).into())?;
             }
         }
-        if let Ok(remote) = builder.connect(host).await {
-            return Ok(remote);
+        let local_addr = builder.local_addr().unwrap();
+        Ok::<_, Error>((builder, local_addr, *host))
+    };
+
+    if let Some(host_name) = host_name
+        && config.boost > 1
+    {
+        let mut futures = hosts
+            .iter()
+            .cycle()
+            .take(config.boost as usize)
+            .map(|host| {
+                let host_name = host_name.to_string();
+                let (builder, local_addr, peer_addr) = get_builder(host).unwrap();
+                let host = *host;
+                (async move || {
+                    let remote = builder.connect(host).await?;
+                    let server_name = ServerName::try_from(host_name).unwrap();
+                    let remote = tls::Stream::new_client(remote, server_name.to_owned()).await?;
+
+                    Ok::<_, Error>((remote, local_addr, peer_addr))
+                })()
+            })
+            .collect::<tokio::task::JoinSet<_>>();
+        while let Some(f) = futures.join_next().await {
+            match f {
+                Ok(Ok(x)) => {
+                    return Ok(x);
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[{id:^5}] -| {} fail {}", host_name, e);
+                }
+                Err(e) => {
+                    unreachable!("Join Error {}", e);
+                }
+            }
+        }
+    } else {
+        for host in hosts {
+            let (builder, local_addr, peer_addr) = get_builder(&host)?;
+            if let Ok(remote) = builder.connect(host).await {
+                return Ok((tls::Stream::new_direct(remote), local_addr, peer_addr));
+            }
         }
     }
     Err(std::io::Error::new(

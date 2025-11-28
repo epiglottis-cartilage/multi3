@@ -12,5 +12,10 @@ tokio = { version = "*", features = ["full"] }
 clap = { version = "*", features = ["derive"] }
 derive_more = { version = "*", features = ["full"] }
 
+
+tokio-rustls = { version = "*" }
+webpki-roots = { version = "*" }
+rcgen = { version = "*", features = ["x509-parser"] }
+
 [profile.release]
 opt-level = 's'

@@ -1,11 +1,12 @@
 mod config;
 mod error;
 mod handler;
+mod tls;
 use error::{Error, Result};
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
-    let (host, cfg) = config::read_config("multi3.toml").unwrap();
+async fn main() -> Result<()> {
+    let (host, cfg) = config::read_config("multi3.toml")?;
 
     let cfg = &*Box::leak(Box::new(cfg));
     let listener = tokio::net::TcpListener::bind(host.host).await?;

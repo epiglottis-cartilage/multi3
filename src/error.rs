@@ -8,20 +8,17 @@ pub enum Error {
     IoError(std::io::Error),
     #[from]
     ParseError(toml::de::Error),
+    #[from]
+    TlsError(tokio_rustls::rustls::Error),
     InvalidRequest(Cow<'static, str>),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::IoError(error) => write!(f, "IO error: {}", error.kind()),
+            Self::TlsError(error) => write!(f, "ILS error: {}", error),
             Self::ParseError(error) => write!(f, "Parse error: {}", error),
             Self::InvalidRequest(s) => write!(f, "Invalid request in {s}"),
         }
     }
 }
-// impl std::error::Error for Error {}
-// impl<E> From<std::sync::mpsc::SendError<E>> for Error {
-//     fn from(_error: std::sync::mpsc::SendError<E>) -> Self {
-//         Self::ChannelError
-//     }
-// }

@@ -14,6 +14,7 @@ pub struct HandlerConfig {
     pub has_ipv4: bool,
     pub has_ipv6: bool,
     pub host: SocketAddr,
+    pub boost: u8,
 }
 impl HandlerConfig {
     pub fn new(
@@ -21,6 +22,7 @@ impl HandlerConfig {
         v6: Vec<Ipv6Addr>,
         ipv6_first: Option<bool>,
         host: SocketAddr,
+        boost: u8,
     ) -> Self {
         Self {
             has_ipv4: !v4.is_empty(),
@@ -29,6 +31,7 @@ impl HandlerConfig {
             ip6: Mutex::new(IpPool::new(v6, Ipv6Addr::UNSPECIFIED)),
             ipv6_first,
             host,
+            boost,
         }
     }
     pub fn next_v4(&self) -> Ipv4Addr {
@@ -70,7 +73,7 @@ pub fn read_config(file_name: &str) -> Result<(HostConfig, HandlerConfig)> {
     use std::{fs::File, io::prelude::*};
     let mut buf = String::new();
     let _ = File::open(file_name)?.read_to_string(&mut buf)?;
-    let res: toml_file::Config = toml::from_str(&buf).unwrap();
+    let res: toml_file::Config = toml::from_str(&buf)?;
     Ok(res.into())
 }
 
@@ -84,6 +87,7 @@ mod toml_file {
         host: SocketAddr,
         pool: Vec<std::net::IpAddr>,
         ipv6_first: Option<bool>,
+        boost: u8,
     }
 
     impl From<Config> for (super::HostConfig, super::HandlerConfig) {
@@ -98,7 +102,7 @@ mod toml_file {
             }
             (
                 super::HostConfig { host: val.host },
-                super::HandlerConfig::new(v4, v6, val.ipv6_first, val.host),
+                super::HandlerConfig::new(v4, v6, val.ipv6_first, val.host, val.boost.max(1)),
             )
         }
     }
