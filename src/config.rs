@@ -5,7 +5,6 @@ use std::{
 };
 pub struct HostConfig {
     pub host: SocketAddr,
-    pub tui: bool,
 }
 #[derive(Debug)]
 pub struct HandlerConfig {
@@ -84,7 +83,6 @@ mod toml_file {
     pub struct Config {
         host: SocketAddr,
         pool: Vec<std::net::IpAddr>,
-        tui: bool,
         ipv6_first: Option<bool>,
     }
 
@@ -99,10 +97,7 @@ mod toml_file {
                 }
             }
             (
-                super::HostConfig {
-                    host: val.host,
-                    tui: val.tui,
-                },
+                super::HostConfig { host: val.host },
                 super::HandlerConfig::new(v4, v6, val.ipv6_first, val.host),
             )
         }

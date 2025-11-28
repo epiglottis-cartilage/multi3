@@ -1,8 +1,7 @@
-#![feature(ip_from)]
 mod config;
 mod error;
 mod handler;
-use error::Result;
+use error::{Error, Result};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {

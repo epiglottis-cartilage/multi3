@@ -6,12 +6,22 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 
-use crate::Result;
 use crate::config;
+use crate::{Error, Result};
 
 type Buffer = Box<[u8]>;
 const SIZE: usize = 40960;
-pub async fn handle(id: u64, mut local: TcpStream, config: &config::HandlerConfig) {
+
+pub async fn handle(id: u64, local: TcpStream, config: &config::HandlerConfig) {
+    if let Err(e) = handle_inner(id, local, config).await {
+        println!("{}", e);
+    }
+}
+pub async fn handle_inner(
+    id: u64,
+    mut local: TcpStream,
+    config: &config::HandlerConfig,
+) -> Result<()> {
     eprintln!("[{id}] Recv from {}", local.peer_addr().unwrap());
 
     let mut buf = Vec::with_capacity(SIZE);
@@ -21,28 +31,26 @@ pub async fn handle(id: u64, mut local: TcpStream, config: &config::HandlerConfi
     let mut buf = buf.into_boxed_slice();
 
     let n = match local.read(&mut buf).await {
-        Ok(0) => return,
-        Err(_) => return,
+        Ok(0) => return Ok(()),
+        Err(_) => return Ok(()),
         Ok(n) => n,
     };
     if n < 3 {
         eprintln!("[{id}] Too short: {:?}", &buf[..n]);
-        return;
+        return Ok(());
     }
-    if let Err(e) = if buf[0] == 0x05 {
+    if buf[0] == 0x05 {
         socks_recv(id, local, config, (buf, n)).await
     } else if str::from_utf8(&buf[..n.min(16)]).is_ok() {
-        let addr = http_addr(&buf).expect("No addr found");
         if buf.starts_with(b"CONNECT") {
+            let addr = http_addr(&buf, 443)?;
             https_resolved(id, local, addr, config, (buf, n)).await
         } else {
+            let addr = http_addr(&buf, 80)?;
             http_resolved(id, local, addr, config, (buf, n)).await
         }
     } else {
-        eprintln!("[{id}] Unknown protocol: {:?}", &buf);
-        return;
-    } {
-        eprintln!("[{id}] Inner error: {e}");
+        Err(Error::InvalidRequest)
     }
 }
 async fn http_resolved(
@@ -91,7 +99,7 @@ async fn https_resolved(
         Err(e) => {
             let _ = local.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n").await;
             eprintln!("[{id}] DNS fails: {addr} {e}");
-            return Ok(());
+            return Err(e);
         }
     };
 
@@ -107,7 +115,7 @@ async fn https_resolved(
             let _ = local
                 .write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")
                 .await;
-            eprintln!("[{id}] Failed to connect {addr}: {e}");
+            return Err(e);
         }
     }
     Ok(())
@@ -287,19 +295,24 @@ fn build_socks_udp(addr: SocketAddr, data: &[u8]) -> Box<[u8]> {
     }
     pack
 }
-fn http_addr(buffer: &[u8]) -> Option<String> {
+fn http_addr(buffer: &[u8], default_port: u16) -> Result<String> {
     let request = String::from_utf8_lossy(buffer);
     let mut request_split = request.split_ascii_whitespace();
     let path = request_split.nth(1);
     let mut addr = request_split
         .skip_while(|x| !x.eq_ignore_ascii_case("Host:"))
         .nth(1)
-        .or(path)?
+        .or(path)
+        .ok_or(Error::IoError(std::io::Error::new(
+            std::io::ErrorKind::HostUnreachable,
+            "DNS fails",
+        )))?
         .to_owned();
     if (addr.starts_with('[') && addr.ends_with(']')) || (!addr.contains(':')) {
-        addr += ":80";
+        addr.push(':');
+        addr.push_str(&default_port.to_string());
     }
-    Some(addr)
+    Ok(addr)
 }
 fn socks_prase_request(buffer: &[u8]) -> Option<(u8, String, usize)> {
     let cmd = buffer[1];
@@ -326,10 +339,7 @@ fn socks_prase_host(buffer: &[u8]) -> Option<(String, usize)> {
         _ => None,
     }
 }
-async fn lookup_host(
-    addr: &str,
-    config: &config::HandlerConfig,
-) -> std::io::Result<Vec<SocketAddr>> {
+async fn lookup_host(addr: &str, config: &config::HandlerConfig) -> Result<Vec<SocketAddr>> {
     let mut addrs = tokio::net::lookup_host(addr).await?.collect::<Vec<_>>();
     if let Some(ipv6_first) = config.ipv6_first {
         addrs.sort_by_key(|addr| {
@@ -340,11 +350,7 @@ async fn lookup_host(
         });
     }
     if addrs.is_empty() {
-        // TODO: error
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "Empty result",
-        ))
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "DNS Empty result").into())
     } else {
         Ok(addrs)
     }
@@ -352,7 +358,7 @@ async fn lookup_host(
 async fn connect(
     hosts: Vec<SocketAddr>,
     config: &config::HandlerConfig,
-) -> std::io::Result<tokio::net::TcpStream> {
+) -> Result<tokio::net::TcpStream> {
     for host in hosts {
         let builder;
         match host {
@@ -372,5 +378,6 @@ async fn connect(
     Err(std::io::Error::new(
         std::io::ErrorKind::HostUnreachable,
         "All hosts are unreachable",
-    ))
+    )
+    .into())
 }
