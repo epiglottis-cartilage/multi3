@@ -1,12 +1,9 @@
 use crate::Result;
-use rcgen::{
-    CertificateParams, DistinguishedName, DnType, Issuer, KeyPair, PublicKey, PublicKeyData,
-    SubjectPublicKeyInfo,
-};
+use rcgen::{CertificateParams, DistinguishedName, DnType, Issuer, KeyPair};
 use std::collections::BTreeMap;
 use std::{cell::LazyCell, sync::Arc};
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex};
-use tokio_rustls::rustls::pki_types::{PrivatePkcs8KeyDer, SubjectPublicKeyInfoDer};
+use tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer;
 use tokio_rustls::{
     TlsAcceptor, TlsConnector, TlsStream,
     rustls::{

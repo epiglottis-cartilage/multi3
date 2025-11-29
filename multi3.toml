@@ -1,5 +1,10 @@
+
 host = "0.0.0.0:6210"
 tui = true            # press 'q' to quit in tui
 # ipv6_first = true   # uncomment to enable, false => ipc4 first
-boost = 3
+boost = 5
 pool = ["0.0.0.0", "::"]
+
+[sni_map] #match suffix
+".youtube.com" = "www.google.com"
+".googlevideo.com" = "www.google.com"

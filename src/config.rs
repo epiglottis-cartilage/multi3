@@ -15,6 +15,7 @@ pub struct HandlerConfig {
     pub has_ipv6: bool,
     pub host: SocketAddr,
     pub boost: u8,
+    pub sni_map: Vec<(String, String)>,
 }
 impl HandlerConfig {
     pub fn new(
@@ -23,6 +24,7 @@ impl HandlerConfig {
         ipv6_first: Option<bool>,
         host: SocketAddr,
         boost: u8,
+        sni_map: Vec<(String, String)>,
     ) -> Self {
         Self {
             has_ipv4: !v4.is_empty(),
@@ -32,6 +34,7 @@ impl HandlerConfig {
             ipv6_first,
             host,
             boost,
+            sni_map,
         }
     }
     pub fn next_v4(&self) -> Ipv4Addr {
@@ -80,7 +83,7 @@ pub fn read_config(file_name: &str) -> Result<(HostConfig, HandlerConfig)> {
 mod toml_file {
     // it sucks, but anyway it works
     use serde::Deserialize;
-    use std::net::SocketAddr;
+    use std::{collections::BTreeMap, net::SocketAddr};
 
     #[derive(Deserialize)]
     pub struct Config {
@@ -88,6 +91,7 @@ mod toml_file {
         pool: Vec<std::net::IpAddr>,
         ipv6_first: Option<bool>,
         boost: u8,
+        sni_map: Option<BTreeMap<String, String>>,
     }
 
     impl From<Config> for (super::HostConfig, super::HandlerConfig) {
@@ -102,7 +106,14 @@ mod toml_file {
             }
             (
                 super::HostConfig { host: val.host },
-                super::HandlerConfig::new(v4, v6, val.ipv6_first, val.host, val.boost.max(1)),
+                super::HandlerConfig::new(
+                    v4,
+                    v6,
+                    val.ipv6_first,
+                    val.host,
+                    val.boost.max(1),
+                    val.sni_map.unwrap_or_default().into_iter().collect(),
+                ),
             )
         }
     }

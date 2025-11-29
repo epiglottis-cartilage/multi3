@@ -109,7 +109,19 @@ async fn https_resolved(
     };
 
     let host_name = &addr[..addr.find(':').unwrap()];
-    match connect(id, Some(host_name), hosts, config).await {
+    let mapped_name = config
+        .sni_map
+        .iter()
+        .filter_map(|(src, dst)| {
+            if host_name.ends_with(src) {
+                Some(dst.as_str())
+            } else {
+                None
+            }
+        })
+        .next()
+        .unwrap_or(host_name);
+    match connect(id, Some((host_name, mapped_name)), hosts, config).await {
         Ok((remote, local_addr, peer_addr)) => {
             local
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -377,7 +389,7 @@ async fn lookup_host(addr: &str, config: &config::HandlerConfig) -> Result<Vec<S
 }
 async fn connect(
     id: u64,
-    host_name: Option<&str>,
+    host_name: Option<(&str, &str)>,
     hosts: Vec<SocketAddr>,
     config: &config::HandlerConfig,
 ) -> Result<(tls::Stream, SocketAddr, SocketAddr)> {
@@ -405,12 +417,12 @@ async fn connect(
             .cycle()
             .take(config.boost as usize)
             .map(|host| {
-                let host_name = host_name.to_string();
+                let mapped = host_name.1.to_string();
                 let (builder, local_addr, peer_addr) = get_builder(host).unwrap();
                 let host = *host;
                 (async move || {
                     let remote = builder.connect(host).await?;
-                    let server_name = ServerName::try_from(host_name).unwrap();
+                    let server_name = ServerName::try_from(mapped).unwrap();
                     let remote = tls::Stream::new_client(remote, server_name.to_owned()).await?;
 
                     Ok::<_, Error>((remote, local_addr, peer_addr))
@@ -423,7 +435,7 @@ async fn connect(
                     return Ok(x);
                 }
                 Ok(Err(e)) => {
-                    eprintln!("[{id:^5}] -| {} fail {}", host_name, e);
+                    eprintln!("[{id:^5}] -| {} fail {}", host_name.0, e);
                 }
                 Err(e) => {
                     unreachable!("Join Error {}", e);
