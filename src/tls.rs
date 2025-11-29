@@ -25,7 +25,13 @@ const CA: CertificateDer = CertificateDer::from_slice(include_bytes!("../cert/ro
 const ISSUER: LazyCell<Issuer<'static, KeyPair>> = LazyCell::new(|| {
     Issuer::from_ca_cert_der(
         &CA,
-        KeyPair::from_pem(include_str!("../cert/root-key.pem")).unwrap(),
+        KeyPair::from_der_and_sign_algo(
+            &PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                include_bytes!("../cert/root-key.der").as_slice(),
+            )),
+            &rcgen::PKCS_RSA_SHA256,
+        )
+        .unwrap(),
     )
     .unwrap()
 });

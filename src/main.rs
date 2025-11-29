@@ -1,3 +1,4 @@
+#![feature(duration_millis_float)]
 mod config;
 mod error;
 mod handler;

@@ -114,6 +114,7 @@ async fn https_resolved(
         .iter()
         .filter_map(|(src, dst)| {
             if host_name.ends_with(src) {
+                eprintln!("[{id:^5}] {addr}-->{dst}");
                 Some(dst.as_str())
             } else {
                 None
@@ -389,7 +390,7 @@ async fn lookup_host(addr: &str, config: &config::HandlerConfig) -> Result<Vec<S
 }
 async fn connect(
     id: u64,
-    host_name: Option<(&str, &str)>,
+    domain: Option<(&str, &str)>,
     hosts: Vec<SocketAddr>,
     config: &config::HandlerConfig,
 ) -> Result<(tls::Stream, SocketAddr, SocketAddr)> {
@@ -409,7 +410,7 @@ async fn connect(
         Ok::<_, Error>((builder, local_addr, *host))
     };
 
-    if let Some(host_name) = host_name
+    if let Some((host_name, mapped_name)) = domain
         && config.boost > 1
     {
         let mut futures = hosts
@@ -417,13 +418,14 @@ async fn connect(
             .cycle()
             .take(config.boost as usize)
             .map(|host| {
-                let mapped = host_name.1.to_string();
+                let mapped = mapped_name.to_string();
                 let (builder, local_addr, peer_addr) = get_builder(host).unwrap();
                 let host = *host;
                 (async move || {
                     let remote = builder.connect(host).await?;
-                    let server_name = ServerName::try_from(mapped).unwrap();
-                    let remote = tls::Stream::new_client(remote, server_name.to_owned()).await?;
+                    let remote =
+                        tls::Stream::new_client(remote, ServerName::try_from(mapped).unwrap())
+                            .await?;
 
                     Ok::<_, Error>((remote, local_addr, peer_addr))
                 })()
@@ -432,10 +434,15 @@ async fn connect(
         while let Some(f) = futures.join_next().await {
             match f {
                 Ok(Ok(x)) => {
+                    let start = std::time::Instant::now();
+                    tokio::spawn((async move || {
+                        let _ = futures.join_all();
+                        eprintln!("[{id:^5}] save {}ms", start.elapsed().as_millis_f32());
+                    })());
                     return Ok(x);
                 }
                 Ok(Err(e)) => {
-                    eprintln!("[{id:^5}] -| {} fail {}", host_name.0, e);
+                    eprintln!("[{id:^5}] -| {} fail {}", host_name, e);
                 }
                 Err(e) => {
                     unreachable!("Join Error {}", e);
