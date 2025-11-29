@@ -11,7 +11,7 @@ serde = { version = "*", features = ["derive"] }
 tokio = { version = "*", features = ["full"] }
 clap = { version = "*", features = ["derive"] }
 derive_more = { version = "*", features = ["full"] }
-
+time = {version = "*"}
 
 tokio-rustls = { version = "*" }
 webpki-roots = { version = "*" }

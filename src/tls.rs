@@ -1,13 +1,17 @@
 use crate::Result;
-use rcgen::{CertificateParams, DistinguishedName, DnType, Issuer, KeyPair};
+use rcgen::{
+    CertificateParams, DistinguishedName, DnType, Issuer, KeyPair, PublicKey, PublicKeyData,
+    SubjectPublicKeyInfo,
+};
 use std::collections::BTreeMap;
 use std::{cell::LazyCell, sync::Arc};
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex};
+use tokio_rustls::rustls::pki_types::{PrivatePkcs8KeyDer, SubjectPublicKeyInfoDer};
 use tokio_rustls::{
     TlsAcceptor, TlsConnector, TlsStream,
     rustls::{
         self, ClientConfig, RootCertStore, ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject},
+        pki_types::{CertificateDer, PrivateKeyDer, ServerName},
     },
 };
 
@@ -20,10 +24,10 @@ pub const TLS_CLIENT: LazyCell<Arc<ClientConfig>> = LazyCell::new(|| {
     Arc::new(config)
 });
 
-const CERT: CertificateDer = CertificateDer::from_slice(include_bytes!("../cert/root-crt.der"));
+const CA: CertificateDer = CertificateDer::from_slice(include_bytes!("../cert/root-crt.der"));
 const ISSUER: LazyCell<Issuer<'static, KeyPair>> = LazyCell::new(|| {
     Issuer::from_ca_cert_der(
-        &CERT,
+        &CA,
         KeyPair::from_pem(include_str!("../cert/root-key.pem")).unwrap(),
     )
     .unwrap()
@@ -40,17 +44,21 @@ async fn generate_server_config(domain: String) -> Arc<ServerConfig> {
             params
                 .distinguished_name
                 .push(DnType::CommonName, "Multi3 Generated Certificate");
-            // 设置证书有效期（例如，24小时）
-            params.not_before = rcgen::date_time_ymd(2000, 1, 1);
-            params.not_after = rcgen::date_time_ymd(2100, 1, 1);
+
+            let now = time::OffsetDateTime::now_utc();
+            params.not_before = now.replace_year(now.year() - 1).unwrap();
+            params.not_after = now.replace_year(now.year() + 5).unwrap();
+            params.is_ca = rcgen::IsCa::NoCa;
+
+            let key_pair = KeyPair::generate().unwrap();
             // 使用根CA的私钥进行签名
-            let cert = params.signed_by(ISSUER.key(), &*ISSUER).unwrap();
+            let cert = params.signed_by(&key_pair, &*ISSUER).unwrap();
+
             let config = rustls::ServerConfig::builder()
                 .with_no_client_auth()
                 .with_single_cert(
-                    vec![cert.clone().into(), CERT],
-                    PrivateKeyDer::from_pem_slice(include_str!("../cert/root-key.pem").as_bytes())
-                        .unwrap(),
+                    vec![cert.clone().into()],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der())),
                 )
                 .unwrap();
             let cfg = Arc::new(config);
@@ -67,12 +75,12 @@ impl Stream {
     pub async fn new_server(remote: TcpStream, host_name: &str) -> Result<Self> {
         let connector = TlsAcceptor::from(generate_server_config(host_name.to_string()).await);
         let stream = connector.accept(remote).await?;
-        Ok(Self::Tls(TlsStream::Server(stream.into())))
+        Ok(Self::Tls(TlsStream::Server(stream)))
     }
     pub async fn new_client(remote: TcpStream, name: ServerName<'static>) -> Result<Self> {
         let connector = TlsConnector::from(TLS_CLIENT.clone());
         let stream = connector.connect(name, remote).await?;
-        Ok(Self::Tls(TlsStream::Client(stream.into())))
+        Ok(Self::Tls(TlsStream::Client(stream)))
     }
     pub fn new_direct(remote: TcpStream) -> Self {
         Self::Direct(remote)
