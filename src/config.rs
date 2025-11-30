@@ -13,7 +13,7 @@ pub struct Config {
     pub ipv6_first: Option<bool>,
     pub tui: bool,
     pub boost: u8,
-    pub sni_rewrite: HashMap<String, String>,
+    pub sni_map: HashMap<String, String>,
 }
 struct Pool<T: Clone> {
     default: T,
@@ -86,7 +86,7 @@ pub fn read_config(file_name: &str) -> Result<(Config, IpPool)> {
         ipv6_first: res.ipv6_first,
         tui: res.tui,
         boost: res.boost.max(1),
-        sni_rewrite: res.sni_rewrite,
+        sni_map: res.sni_map,
     };
     let pool = IpPool::new(res.pool);
     return Ok((config, pool));
@@ -104,7 +104,7 @@ mod toml_file {
         pub tui: bool,
         pub ipv6_first: Option<bool>,
         pub boost: u8,
-        pub sni_rewrite: std::collections::HashMap<String, String>,
+        pub sni_map: std::collections::HashMap<String, String>,
     }
 
     #[derive(Deserialize)]

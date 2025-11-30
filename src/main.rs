@@ -5,7 +5,6 @@ mod error;
 mod event;
 mod handler;
 mod tls;
-mod utils;
 pub use error::*;
 use std::{
     net::TcpListener,

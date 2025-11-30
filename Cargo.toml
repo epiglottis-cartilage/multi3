@@ -12,7 +12,10 @@ toml = "*"
 serde = { version = "*", features = ["derive"] }
 crossterm = "*"
 ratatui = "*"
+ouroboros = "*"
+time = "*"
 rustls = "*"
+rcgen = { version = "*", features = ["x509-parser"] }
 webpki = "*"
 webpki-roots = "*"
 

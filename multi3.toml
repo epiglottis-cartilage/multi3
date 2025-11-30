@@ -1,10 +1,13 @@
-tui = true # press 'q' to quit in tui
+tui = false # press 'q' to quit in tui
 # ipv6_first = true   # uncomment to enable
 host = "0.0.0.0:6210"
-pool = ["10.0.0.1", "10.0.0.2"]
+pool = ["0.0.0.0"]
 boost = 1
-sni_rewrite = {}
+
 
 [timeout]
 connect = 5000 #ms
 io = 15000     #ms
+
+[sni_map]
+".youtube.com" = "www.google.com"
