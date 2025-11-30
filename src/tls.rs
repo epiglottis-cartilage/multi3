@@ -2,13 +2,16 @@ use crate::Result;
 use rcgen::{CertificateParams, DistinguishedName, DnType, Issuer, KeyPair};
 use std::collections::BTreeMap;
 use std::{cell::LazyCell, sync::Arc};
-use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex};
-use tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+    sync::Mutex,
+};
 use tokio_rustls::{
     TlsAcceptor, TlsConnector, TlsStream,
     rustls::{
         self, ClientConfig, RootCertStore, ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer, ServerName},
+        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
     },
 };
 
@@ -88,10 +91,50 @@ impl Stream {
     pub fn new_direct(remote: TcpStream) -> Self {
         Self::Direct(remote)
     }
-    pub async fn write_all(&mut self, buf: &[u8]) -> std::result::Result<(), std::io::Error> {
-        match self {
-            Stream::Direct(stream) => stream.write_all(buf).await,
-            Stream::Tls(stream) => stream.write_all(buf).await,
+}
+use std::pin::Pin;
+use std::task::{Context, Poll};
+impl AsyncRead for Stream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Direct(x) => Pin::new(x).poll_read(cx, buf),
+            Self::Tls(x) => Pin::new(x).poll_read(cx, buf),
+        }
+    }
+}
+impl AsyncWrite for Stream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::result::Result<usize, std::io::Error>> {
+        match self.get_mut() {
+            Self::Direct(x) => Pin::new(x).poll_write(cx, buf),
+            Self::Tls(x) => Pin::new(x).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::result::Result<(), std::io::Error>> {
+        match self.get_mut() {
+            Self::Direct(x) => Pin::new(x).poll_flush(cx),
+            Self::Tls(x) => Pin::new(x).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::result::Result<(), std::io::Error>> {
+        match self.get_mut() {
+            Self::Direct(x) => Pin::new(x).poll_shutdown(cx),
+            Self::Tls(x) => Pin::new(x).poll_shutdown(cx),
         }
     }
 }

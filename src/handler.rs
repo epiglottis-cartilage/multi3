@@ -270,19 +270,8 @@ async fn socks_udp_relay(
     Ok(())
 }
 
-async fn tcp_relay(id: u64, local: tls::Stream, remote: tls::Stream) -> Result<()> {
-    use tls::Stream;
-    match (local, remote) {
-        (Stream::Direct(mut local), Stream::Direct(mut remote)) => {
-            let _ =
-                tokio::io::copy_bidirectional_with_sizes(&mut local, &mut remote, SIZE, SIZE).await;
-        }
-        (Stream::Tls(mut local), Stream::Tls(mut remote)) => {
-            let _ =
-                tokio::io::copy_bidirectional_with_sizes(&mut local, &mut remote, SIZE, SIZE).await;
-        }
-        _ => unreachable!(),
-    }
+async fn tcp_relay(id: u64, mut local: tls::Stream, mut remote: tls::Stream) -> Result<()> {
+    tokio::io::copy_bidirectional_with_sizes(&mut local, &mut remote, SIZE, SIZE).await?;
     eprintln!("[{id:^5}] Done",);
     Ok(())
 }
