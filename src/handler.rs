@@ -1,10 +1,7 @@
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::net::UdpSocket;
+use tokio::net::{TcpStream, UdpSocket};
 use tokio_rustls::rustls::pki_types::ServerName;
 
 use crate::config;

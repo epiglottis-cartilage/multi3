@@ -1,9 +1,13 @@
 
 host = "0.0.0.0:6210"
-tui = true            # press 'q' to quit in tui
-ipv6_first = true   # uncomment to enable, false => ipc4 first
-boost = 5
+tui = true               # press 'q' to quit in tui
+ipv6_first = true        # uncomment to enable, false => ipc4 first
 pool = ["0.0.0.0", "::"]
+
+# following feature requires installation of cert
+
+boost = 5 # This will establish 5 connections each time and pick the fastest one
+# disabled if boost <= 1
 
 [sni_map] #match suffix
 ".youtube.com" = "www.google.com"
