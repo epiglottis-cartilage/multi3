@@ -22,6 +22,6 @@ Don't forget *manually* setup system proxy.
 ## TLS
 It is suspected of intentionally blocking some connections; therefore, a possible solution is to establish multiple connections each time and then select the one that responds fastest.
 
-To use this feature, you need to specify the `tls` field in the configuration file to be greater than 1.
+To use this feature, you need to specify the `boost` field in the configuration file to be greater than 1.
 
 And you need to install the root-certificates in the `cert` folder.
