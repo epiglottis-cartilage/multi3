@@ -376,7 +376,7 @@ async fn lookup_host(addr: &str, config: &config::HandlerConfig) -> Result<Vec<S
 }
 async fn connect(
     id: u64,
-    domain: Option<(&str, &str)>,
+    sni_map: Option<(&str, &str)>,
     hosts: Vec<SocketAddr>,
     config: &config::HandlerConfig,
 ) -> Result<(tls::Stream, SocketAddr, SocketAddr)> {
@@ -395,8 +395,7 @@ async fn connect(
         let local_addr = builder.local_addr().unwrap();
         Ok::<_, Error>((builder, local_addr, *host))
     };
-
-    if let Some((host_name, mapped_name)) = domain
+    if let Some((host_name, mapped_name)) = sni_map
         && config.boost > 1
     {
         let mut futures = hosts

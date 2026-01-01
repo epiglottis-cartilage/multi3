@@ -6,7 +6,7 @@ pool = ["0.0.0.0", "::"]
 
 # following feature requires installation of cert
 
-boost = 5 # This will establish 5 connections each time and pick the fastest one
+boost = 1 # This will establish 5 connections each time and pick the fastest one
 # disabled if boost <= 1
 
 [sni_map] #match suffix

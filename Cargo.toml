@@ -1,6 +1,6 @@
 [package]
 name = "multi3"
-version = "0.1.0"
+version = "2.0.0-async"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,7 +11,7 @@ serde = { version = "*", features = ["derive"] }
 tokio = { version = "*", features = ["full"] }
 clap = { version = "*", features = ["derive"] }
 derive_more = { version = "*", features = ["full"] }
-time = {version = "*"}
+time = { version = "*" }
 
 tokio-rustls = { version = "*" }
 webpki-roots = { version = "*" }
@@ -19,3 +19,6 @@ rcgen = { version = "*", features = ["x509-parser"] }
 
 [profile.release]
 opt-level = 's'
+lto = "thin"
+codegen-units = 1
+panic = "abort"
