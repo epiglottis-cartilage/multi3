@@ -13,7 +13,7 @@ const SIZE: usize = 40960;
 
 pub async fn handle(id: u64, local: TcpStream, config: &config::HandlerConfig) {
     if let Err(e) = handle_inner(id, local, config).await {
-        println!("[{id:^5}] {e}");
+        eprintln!("[{id:^5}] {e}");
     }
 }
 pub async fn handle_inner(
@@ -72,11 +72,10 @@ async fn http_resolved(
         }
     };
 
-    match connect(id, None, hosts, config).await {
+    match connect(id, None, None, hosts, config).await {
         Ok((mut remote, local_addr, peer_addr)) => {
             remote.write_all(&buf[..n]).await?;
-
-            eprintln!("[{id:^5}] {} <-> {}", local_addr, peer_addr);
+            eprintln!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
             tcp_relay(id, tls::Stream::new_direct(local), remote).await?;
         }
         Err(e) => {
@@ -111,26 +110,26 @@ async fn https_resolved(
         .iter()
         .filter_map(|(src, dst)| {
             if host_name.ends_with(src) {
-                eprintln!("[{id:^5}] {addr}-->{dst}");
-                Some(dst.as_str())
+                eprintln!("[{id:^5}] {addr} → {dst:?}");
+                Some(dst)
             } else {
                 None
             }
         })
-        .next()
-        .unwrap_or(host_name);
-    match connect(id, Some((host_name, mapped_name)), hosts, config).await {
+        .next();
+    match connect(id, Some(host_name), mapped_name, hosts, config).await {
         Ok((remote, local_addr, peer_addr)) => {
             local
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await?;
             local.flush().await?;
-            let local = if config.boost > 1 {
+            let local = if matches!(remote, tls::Stream::Tls(_)) {
+                eprintln!("[{id:^5}] {} ⇹ {}", local_addr, peer_addr);
                 tls::Stream::new_server(local, host_name).await?
             } else {
+                eprintln!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
                 tls::Stream::new_direct(local)
             };
-            eprintln!("[{id:^5}] {} <-> {}", local_addr, peer_addr);
             tcp_relay(id, local, remote).await?;
         }
         Err(e) => {
@@ -197,11 +196,11 @@ async fn socks_tcp_resolved(
             return Err(e);
         }
     };
-    match connect(id, None, hosts, config).await {
+    match connect(id, None, None, hosts, config).await {
         Ok((remote, local_addr, peer_addr)) => {
             let n = build_socks_response(0, local_addr, &mut buf);
             let _ = local.write_all(&buf[..n]).await;
-            eprintln!("[{id:^5}] {} <-> {}", local_addr, peer_addr);
+            eprintln!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
             tcp_relay(id, tls::Stream::new_direct(local), remote).await?;
         }
         Err(e) => {
@@ -225,7 +224,7 @@ async fn socks_udp_resolved(
         tokio::net::UdpSocket::bind((config.next_v4(), 0)).await?
     };
     let remote_bind = socket.local_addr().unwrap();
-    eprintln!("[{id:^5}] Udp <- {}", remote_bind);
+    eprintln!("[{id:^5}] Udp ← {}", remote_bind);
 
     let n = build_socks_response(0, remote_bind, &mut buf);
     local.write_all(&buf[..n]).await?;
@@ -248,7 +247,7 @@ async fn socks_udp_relay(
         let (n, src) = socket.recv_from(&mut buf).await?;
         if local.is_none() {
             local = Some(src);
-            eprintln!("[{id:^5}] {} <-> ...", src);
+            eprintln!("[{id:^5}] {} ↔︎ ...", src);
         }
         let local = local.unwrap();
         if src == local {
@@ -376,7 +375,8 @@ async fn lookup_host(addr: &str, config: &config::HandlerConfig) -> Result<Vec<S
 }
 async fn connect(
     id: u64,
-    sni_map: Option<(&str, &str)>,
+    host_name: Option<&str>,
+    mapped_name: Option<&ServerName<'static>>,
     hosts: Vec<SocketAddr>,
     config: &config::HandlerConfig,
 ) -> Result<(tls::Stream, SocketAddr, SocketAddr)> {
@@ -395,22 +395,31 @@ async fn connect(
         let local_addr = builder.local_addr().unwrap();
         Ok::<_, Error>((builder, local_addr, *host))
     };
-    if let Some((host_name, mapped_name)) = sni_map
-        && config.boost > 1
-    {
+    if let (Some(host_name), Some((mapped_name, boost))) = (
+        host_name,
+        match (mapped_name, config.boost) {
+            (None, None) => None,
+            (None, Some(boost)) => host_name.and_then(|host_name| {
+                ServerName::try_from(host_name)
+                    .ok()
+                    .map(|mapped_name| (mapped_name, boost.get()))
+            }),
+            (Some(mapped_name), boost) => {
+                Some((mapped_name.to_owned(), boost.map_or(1, |b| b.get())))
+            }
+        },
+    ) {
         let mut futures = hosts
             .iter()
             .cycle()
-            .take(config.boost as usize)
+            .take(boost as usize)
             .map(|host| {
-                let mapped = mapped_name.to_string();
                 let (builder, local_addr, peer_addr) = get_builder(host).unwrap();
                 let host = *host;
+                let mapped = mapped_name.to_owned();
                 (async move || {
                     let remote = builder.connect(host).await?;
-                    let remote =
-                        tls::Stream::new_client(remote, ServerName::try_from(mapped).unwrap())
-                            .await?;
+                    let remote = tls::Stream::new_client(remote, mapped).await?;
 
                     Ok::<_, Error>((remote, local_addr, peer_addr))
                 })()
@@ -420,14 +429,16 @@ async fn connect(
             match f {
                 Ok(Ok(x)) => {
                     let start = std::time::Instant::now();
-                    tokio::spawn((async move || {
-                        let _ = futures.join_all();
-                        eprintln!("[{id:^5}] save {}ms", start.elapsed().as_millis_f32());
-                    })());
+                    if cfg!(debug_assertions) {
+                        tokio::spawn((async move || {
+                            let _ = futures.join_all();
+                            eprintln!("[{id:^5}] save {}ms", start.elapsed().as_millis_f32());
+                        })());
+                    }
                     return Ok(x);
                 }
                 Ok(Err(e)) => {
-                    eprintln!("[{id:^5}] -| {} fail {}", host_name, e);
+                    eprintln!("[{id:^5}] ⫤ {} fail {}", host_name, e);
                 }
                 Err(e) => {
                     unreachable!("Join Error {}", e);

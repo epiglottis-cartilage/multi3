@@ -1,6 +1,9 @@
+use tokio_rustls::rustls::pki_types::ServerName;
+
 use crate::Result;
 use std::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    num::NonZeroU8,
     sync::Mutex,
 };
 pub struct HostConfig {
@@ -14,8 +17,8 @@ pub struct HandlerConfig {
     pub has_ipv4: bool,
     pub has_ipv6: bool,
     pub host: SocketAddr,
-    pub boost: u8,
-    pub sni_map: Vec<(String, String)>,
+    pub boost: Option<NonZeroU8>,
+    pub sni_map: Vec<(String, ServerName<'static>)>,
 }
 impl HandlerConfig {
     pub fn new(
@@ -23,8 +26,8 @@ impl HandlerConfig {
         v6: Vec<Ipv6Addr>,
         ipv6_first: Option<bool>,
         host: SocketAddr,
-        boost: u8,
-        sni_map: Vec<(String, String)>,
+        boost: Option<NonZeroU8>,
+        sni_map: Vec<(String, ServerName<'static>)>,
     ) -> Self {
         Self {
             has_ipv4: !v4.is_empty(),
@@ -83,7 +86,8 @@ pub fn read_config(file_name: &str) -> Result<(HostConfig, HandlerConfig)> {
 mod toml_file {
     // it sucks, but anyway it works
     use serde::Deserialize;
-    use std::{collections::BTreeMap, net::SocketAddr};
+    use std::{collections::BTreeMap, net::SocketAddr, num::NonZeroU8};
+    use tokio_rustls::rustls::pki_types::ServerName;
 
     #[derive(Deserialize)]
     pub struct Config {
@@ -91,7 +95,7 @@ mod toml_file {
         pool: Vec<std::net::IpAddr>,
         ipv6_first: Option<bool>,
         boost: u8,
-        sni_map: Option<BTreeMap<String, String>>,
+        sni_map: BTreeMap<String, String>,
     }
 
     impl From<Config> for (super::HostConfig, super::HandlerConfig) {
@@ -104,6 +108,11 @@ mod toml_file {
                     std::net::IpAddr::V6(x) => v6.push(x),
                 }
             }
+            for host in val.sni_map.values() {
+                if let Err(_) = ServerName::try_from(host.as_str()) {
+                    panic!("{} is not a correct domain", host);
+                }
+            }
             (
                 super::HostConfig { host: val.host },
                 super::HandlerConfig::new(
@@ -111,8 +120,11 @@ mod toml_file {
                     v6,
                     val.ipv6_first,
                     val.host,
-                    val.boost.max(1),
-                    val.sni_map.unwrap_or_default().into_iter().collect(),
+                    NonZeroU8::new(if val.boost <= 1 { 0 } else { val.boost }),
+                    val.sni_map
+                        .into_iter()
+                        .map(|(k, v)| (k, ServerName::try_from(v).unwrap()))
+                        .collect(),
                 ),
             )
         }
