@@ -1,27 +1,99 @@
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    pin::Pin,
+    sync::Arc,
+    sync::atomic::{AtomicU64, Ordering},
+    task::{Context, Poll},
+};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio_rustls::rustls::pki_types::ServerName;
 
 use crate::config;
 use crate::tls;
+use crate::tracker::{Protocol, Tracker};
 use crate::{Error, Result};
 
 type Buffer = Box<[u8]>;
 const SIZE: usize = 40960;
 
-pub async fn handle(id: u64, local: TcpStream, config: &config::HandlerConfig) {
-    if let Err(e) = handle_inner(id, local, config).await {
-        log::error!("[{id:^5}] {e}");
+struct ByteCounter<S> {
+    inner: S,
+    read_count: Arc<AtomicU64>,
+    write_count: Arc<AtomicU64>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for ByteCounter<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let result = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if matches!(result, Poll::Ready(Ok(()))) {
+            let after = buf.filled().len();
+            let read = after - before;
+            this.read_count.fetch_add(read as u64, Ordering::Relaxed);
+        }
+        result
     }
 }
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for ByteCounter<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &result {
+            this.write_count.fetch_add(*n as u64, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_shutdown(cx)
+    }
+}
+
+pub async fn handle(id: u64, local: TcpStream, config: &config::HandlerConfig, tracker: Tracker) {
+    let peer_addr = match local.peer_addr() {
+        Ok(addr) => addr,
+        Err(_) => return,
+    };
+    log::info!("[{id:^5}] Recv from {}", peer_addr);
+    tracker.add(id, String::new(), String::new(), Protocol::Http);
+
+    match handle_inner(id, local, config, &tracker).await {
+        Ok(()) => {
+            tracker.set_completed(id, None);
+        }
+        Err(e) => {
+            log::error!("[{id:^5}] {e}");
+            tracker.set_completed(id, Some(e.to_string()));
+        }
+    }
+}
+
 pub async fn handle_inner(
     id: u64,
     mut local: TcpStream,
     config: &config::HandlerConfig,
+    tracker: &Tracker,
 ) -> Result<()> {
-    log::info!("[{id:^5}] Recv from {}", local.peer_addr().unwrap());
+    let local_addr = local.peer_addr().unwrap();
+    log::info!("[{id:^5}] Recv from {}", local_addr);
 
     let mut buf = Vec::with_capacity(SIZE);
     unsafe {
@@ -40,14 +112,16 @@ pub async fn handle_inner(
         ));
     }
     if buf[0] == 0x05 {
-        socks_recv(id, local, config, (buf, n)).await
+        socks_recv(id, local, config, (buf, n), tracker).await
     } else if str::from_utf8(&buf[..n.min(16)]).is_ok() {
         if buf.starts_with(b"CONNECT") {
             let addr = http_addr(&buf, 443)?;
-            https_resolved(id, local, addr, config, (buf, n)).await
+            tracker.update_info(id, addr.clone(), Protocol::Https);
+            https_resolved(id, local, addr, config, (buf, n), tracker).await
         } else {
             let addr = http_addr(&buf, 80)?;
-            http_resolved(id, local, addr, config, (buf, n)).await
+            tracker.update_info(id, addr.clone(), Protocol::Http);
+            http_resolved(id, local, addr, config, (buf, n), tracker).await
         }
     } else {
         Err(Error::InvalidRequest(
@@ -55,12 +129,14 @@ pub async fn handle_inner(
         ))
     }
 }
+
 async fn http_resolved(
     id: u64,
     mut local: TcpStream,
     addr: String,
     config: &config::HandlerConfig,
     (buf, n): (Buffer, usize),
+    tracker: &Tracker,
 ) -> Result<()> {
     log::info!("[{id:^5}] Http  {addr}");
 
@@ -72,27 +148,30 @@ async fn http_resolved(
         }
     };
 
-    match connect(id, None, None, hosts, config).await {
+    match connect(id, None, None, hosts, config, tracker).await {
         Ok((mut remote, local_addr, peer_addr)) => {
             remote.write_all(&buf[..n]).await?;
-            log::info!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
-            tcp_relay(id, tls::Stream::new_direct(local), remote).await?;
+            tracker.set_connected(id);
+            log::info!("[{id:^5}] {} \u{2194}\u{fe0e} {}", local_addr, peer_addr);
+            tcp_relay(id, tls::Stream::new_direct(local), remote, tracker).await?;
+            Ok(())
         }
         Err(e) => {
             let _ = local
                 .write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")
                 .await;
-            return Err(e);
+            Err(e)
         }
     }
-    Ok(())
 }
+
 async fn https_resolved(
     id: u64,
     mut local: TcpStream,
     addr: String,
     config: &config::HandlerConfig,
     (_buf, _n): (Buffer, usize),
+    tracker: &Tracker,
 ) -> Result<()> {
     log::info!("[{id:^5}] Https {addr}");
 
@@ -110,42 +189,45 @@ async fn https_resolved(
         .iter()
         .filter_map(|(src, dst)| {
             if host_name.ends_with(src) {
-                log::info!("[{id:^5}] {addr} → {dst:?}");
+                log::info!("[{id:^5}] {addr} \u{2192} {dst:?}");
                 Some(dst)
             } else {
                 None
             }
         })
         .next();
-    match connect(id, Some(host_name), mapped_name, hosts, config).await {
+    match connect(id, Some(host_name), mapped_name, hosts, config, tracker).await {
         Ok((remote, local_addr, peer_addr)) => {
             local
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await?;
             local.flush().await?;
+            tracker.set_connected(id);
             let local = if matches!(remote, tls::Stream::Tls(_)) {
-                log::info!("[{id:^5}] {} ⇹ {}", local_addr, peer_addr);
+                log::info!("[{id:^5}] {} \u{21f9} {}", local_addr, peer_addr);
                 tls::Stream::new_server(local, host_name).await?
             } else {
-            log::info!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
+                log::info!("[{id:^5}] {} \u{2194}\u{fe0e} {}", local_addr, peer_addr);
                 tls::Stream::new_direct(local)
             };
-            tcp_relay(id, local, remote).await?;
+            tcp_relay(id, local, remote, tracker).await?;
+            Ok(())
         }
         Err(e) => {
             let _ = local
                 .write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")
                 .await;
-            return Err(e);
+            Err(e)
         }
     }
-    Ok(())
 }
+
 async fn socks_recv(
     id: u64,
     mut local: TcpStream,
     config: &config::HandlerConfig,
     (buf, n): (Buffer, usize),
+    tracker: &Tracker,
 ) -> Result<()> {
     log::info!("[{id:^5}] Socks5");
     if !buf[2..n].contains(&0x00) {
@@ -156,35 +238,39 @@ async fn socks_recv(
     } else {
         local.write_all(&[0x05, 0x00]).await?;
         local.flush().await?;
-        socks_handle_request(id, local, config, (buf, n)).await?;
-        Ok(())
+        socks_handle_request(id, local, config, (buf, n), tracker).await
     }
 }
+
 async fn socks_handle_request(
     id: u64,
     mut local: TcpStream,
     config: &config::HandlerConfig,
     (mut buf, _n): (Buffer, usize),
+    tracker: &Tracker,
 ) -> Result<()> {
     let n = local.read(&mut buf).await?;
     let (cmd, addr, _) = socks_prase_request(&buf[..n]).unwrap();
     match cmd {
         1 => {
-            socks_tcp_resolved(id, local, addr, config, (buf, n)).await?;
+            tracker.update_info(id, addr.clone(), Protocol::Socks5Tcp);
+            socks_tcp_resolved(id, local, addr, config, (buf, n), tracker).await
         }
         3 => {
-            socks_udp_resolved(id, local, addr, config, (buf, n)).await?;
+            tracker.update_info(id, addr.clone(), Protocol::Socks5Udp);
+            socks_udp_resolved(id, local, addr, config, (buf, n), tracker).await
         }
-        _ => {}
+        _ => Ok(()),
     }
-    Ok(())
 }
+
 async fn socks_tcp_resolved(
     id: u64,
     mut local: TcpStream,
     addr: String,
     config: &config::HandlerConfig,
     (mut buf, n): (Buffer, usize),
+    tracker: &Tracker,
 ) -> Result<()> {
     log::info!("[{id:^5}] Tcp -> {addr}");
 
@@ -196,27 +282,30 @@ async fn socks_tcp_resolved(
             return Err(e);
         }
     };
-    match connect(id, None, None, hosts, config).await {
+    match connect(id, None, None, hosts, config, tracker).await {
         Ok((remote, local_addr, peer_addr)) => {
             let n = build_socks_response(0, local_addr, &mut buf);
             let _ = local.write_all(&buf[..n]).await;
-            log::info!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
-            tcp_relay(id, tls::Stream::new_direct(local), remote).await?;
+            tracker.set_connected(id);
+            log::info!("[{id:^5}] {} \u{2194}\u{fe0e} {}", local_addr, peer_addr);
+            tcp_relay(id, tls::Stream::new_direct(local), remote, tracker).await?;
+            Ok(())
         }
         Err(e) => {
             buf[1] = 0x04;
             let _ = local.write_all(&buf[..n]).await;
-            return Err(e);
+            Err(e)
         }
     }
-    Ok(())
 }
+
 async fn socks_udp_resolved(
     id: u64,
     mut local: TcpStream,
     _addr: String,
     config: &config::HandlerConfig,
     (mut buf, _n): (Buffer, usize),
+    tracker: &Tracker,
 ) -> Result<()> {
     let socket = if local.peer_addr().unwrap().is_ipv6() {
         tokio::net::UdpSocket::bind((config.next_v6(), 0)).await?
@@ -224,21 +313,33 @@ async fn socks_udp_resolved(
         tokio::net::UdpSocket::bind((config.next_v4(), 0)).await?
     };
     let remote_bind = socket.local_addr().unwrap();
-    log::info!("[{id:^5}] Udp ← {}", remote_bind);
+    tracker.update_local_addr(id, remote_bind.ip().to_string());
+    log::info!("[{id:^5}] Udp \u{2190} {}", remote_bind);
 
     let n = build_socks_response(0, remote_bind, &mut buf);
     local.write_all(&buf[..n]).await?;
-    socks_udp_relay(id, local, socket, (buf, n)).await?;
-    Ok(())
+    socks_udp_relay(id, local, socket, (buf, n), tracker).await
 }
+
 async fn socks_udp_relay(
     id: u64,
     ctl: TcpStream,
     socket: UdpSocket,
     (mut buf, _n): (Buffer, usize),
+    tracker: &Tracker,
 ) -> Result<()> {
     let mut local: Option<SocketAddr> = None;
     let ctl = ctl.into_std().unwrap();
+    tracker.set_connected(id);
+
+    let conns = tracker.get_connections();
+    let conn = conns.iter().find(|c| c.id == id);
+    let (upload_atomic, download_atomic) = if let Some(conn) = conn {
+        (conn.upload_bytes.clone(), conn.download_bytes.clone())
+    } else {
+        (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)))
+    };
+
     loop {
         match ctl.peek(&mut [0]) {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -247,7 +348,7 @@ async fn socks_udp_relay(
         let (n, src) = socket.recv_from(&mut buf).await?;
         if local.is_none() {
             local = Some(src);
-            log::info!("[{id:^5}] {} ↔︎ ...", src);
+            log::info!("[{id:^5}] {} \u{2194}\u{fe0e} ...", src);
         }
         let local = local.unwrap();
         if src == local {
@@ -255,22 +356,45 @@ async fn socks_udp_relay(
                 continue;
             }
             let (addr, d) = socks_prase_host(&buf[3..n]).unwrap();
-            socket.send_to(&buf[d..n], &addr).await?;
+            let sent = socket.send_to(&buf[d..n], &addr).await?;
+            upload_atomic.fetch_add(sent as u64, Ordering::Relaxed);
         } else {
-            socket
+            let sent = socket
                 .send_to(&build_socks_udp(src, &buf[..n]), local)
                 .await?;
+            download_atomic.fetch_add(sent as u64, Ordering::Relaxed);
         }
     }
     log::info!("[{id:^5}] Done");
     Ok(())
 }
 
-async fn tcp_relay(id: u64, mut local: tls::Stream, mut remote: tls::Stream) -> Result<()> {
+async fn tcp_relay(
+    id: u64,
+    local: tls::Stream,
+    remote: tls::Stream,
+    tracker: &Tracker,
+) -> Result<()> {
+    let conns = tracker.get_connections();
+    let conn = conns.iter().find(|c| c.id == id);
+    let (upload, download) = if let Some(conn) = conn {
+        (conn.upload_bytes.clone(), conn.download_bytes.clone())
+    } else {
+        (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)))
+    };
+
+    let mut remote = ByteCounter {
+        inner: remote,
+        read_count: download.clone(),
+        write_count: upload.clone(),
+    };
+    let mut local = local;
+
     tokio::io::copy_bidirectional_with_sizes(&mut local, &mut remote, SIZE, SIZE).await?;
     log::info!("[{id:^5}] Done");
     Ok(())
 }
+
 fn build_socks_response(cmd: u8, addr: SocketAddr, buf: &mut Buffer) -> usize {
     buf[0] = 0x05;
     buf[1] = cmd;
@@ -290,6 +414,7 @@ fn build_socks_response(cmd: u8, addr: SocketAddr, buf: &mut Buffer) -> usize {
         }
     }
 }
+
 fn build_socks_udp(addr: SocketAddr, data: &[u8]) -> Box<[u8]> {
     let mut pack = Vec::with_capacity(data.len() + if addr.is_ipv6() { 22 } else { 10 });
     unsafe { pack.set_len(pack.capacity()) };
@@ -313,6 +438,7 @@ fn build_socks_udp(addr: SocketAddr, data: &[u8]) -> Box<[u8]> {
     }
     pack
 }
+
 fn http_addr(buffer: &[u8], default_port: u16) -> Result<String> {
     let request = String::from_utf8_lossy(buffer);
     let mut request_split = request.split_ascii_whitespace();
@@ -332,10 +458,12 @@ fn http_addr(buffer: &[u8], default_port: u16) -> Result<String> {
     }
     Ok(addr)
 }
+
 fn socks_prase_request(buffer: &[u8]) -> Option<(u8, String, usize)> {
     let cmd = buffer[1];
     socks_prase_host(&buffer[3..]).map(|(x, y)| (cmd, x, y))
 }
+
 fn socks_prase_host(buffer: &[u8]) -> Option<(String, usize)> {
     match buffer[0] {
         1 => {
@@ -357,6 +485,7 @@ fn socks_prase_host(buffer: &[u8]) -> Option<(String, usize)> {
         _ => None,
     }
 }
+
 async fn lookup_host(addr: &str, config: &config::HandlerConfig) -> Result<Vec<SocketAddr>> {
     let mut addrs = tokio::net::lookup_host(addr).await?.collect::<Vec<_>>();
     if let Some(ipv6_first) = config.ipv6_first {
@@ -373,12 +502,14 @@ async fn lookup_host(addr: &str, config: &config::HandlerConfig) -> Result<Vec<S
         Ok(addrs)
     }
 }
+
 async fn connect(
     id: u64,
     host_name: Option<&str>,
     mapped_name: Option<&ServerName<'static>>,
     hosts: Vec<SocketAddr>,
     config: &config::HandlerConfig,
+    tracker: &Tracker,
 ) -> Result<(tls::Stream, SocketAddr, SocketAddr)> {
     let get_builder = |host: &SocketAddr| {
         let builder;
@@ -392,8 +523,7 @@ async fn connect(
                 builder.bind((config.next_v6(), 0).into())?;
             }
         }
-        let local_addr = builder.local_addr().unwrap();
-        Ok::<_, Error>((builder, local_addr, *host))
+        Ok::<_, Error>((builder, *host))
     };
     if let (Some(host_name), Some((mapped_name, boost))) = (
         host_name,
@@ -414,11 +544,12 @@ async fn connect(
             .cycle()
             .take(boost as usize)
             .map(|host| {
-                let (builder, local_addr, peer_addr) = get_builder(host).unwrap();
+                let (builder, peer_addr) = get_builder(host).unwrap();
                 let host = *host;
                 let mapped = mapped_name.to_owned();
                 (async move || {
                     let remote = builder.connect(host).await?;
+                    let local_addr = remote.local_addr().unwrap();
                     let remote = tls::Stream::new_client(remote, mapped).await?;
 
                     Ok::<_, Error>((remote, local_addr, peer_addr))
@@ -427,7 +558,7 @@ async fn connect(
             .collect::<tokio::task::JoinSet<_>>();
         while let Some(f) = futures.join_next().await {
             match f {
-                Ok(Ok(x)) => {
+                Ok(Ok((remote, local_addr, peer_addr))) => {
                     let start = std::time::Instant::now();
                     if cfg!(debug_assertions) {
                         tokio::spawn((async move || {
@@ -435,10 +566,12 @@ async fn connect(
                             log::debug!("[{id:^5}] save {}ms", start.elapsed().as_millis_f32());
                         })());
                     }
-                    return Ok(x);
+                    tracker.update_local_addr(id, local_addr.ip().to_string());
+                    return Ok((remote, local_addr, peer_addr));
                 }
                 Ok(Err(e)) => {
-                    log::warn!("[{id:^5}] ⫤ {} fail {}", host_name, e);
+                    tracker.add_retry(id, format!("{} fail {}", host_name, e));
+                    log::warn!("[{id:^5}] \u{2ae4} {} fail {}", host_name, e);
                 }
                 Err(e) => {
                     unreachable!("Join Error {}", e);
@@ -447,8 +580,10 @@ async fn connect(
         }
     } else {
         for host in hosts {
-            let (builder, local_addr, peer_addr) = get_builder(&host)?;
+            let (builder, peer_addr) = get_builder(&host)?;
             if let Ok(remote) = builder.connect(host).await {
+                let local_addr = remote.local_addr().unwrap();
+                tracker.update_local_addr(id, local_addr.ip().to_string());
                 return Ok((tls::Stream::new_direct(remote), local_addr, peer_addr));
             }
         }

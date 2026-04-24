@@ -19,6 +19,7 @@ pub struct HandlerConfig {
     pub host: SocketAddr,
     pub boost: Option<NonZeroU8>,
     pub sni_map: Vec<(String, ServerName<'static>)>,
+    pub tui: bool,
 }
 impl HandlerConfig {
     pub fn new(
@@ -28,6 +29,7 @@ impl HandlerConfig {
         host: SocketAddr,
         boost: Option<NonZeroU8>,
         sni_map: Vec<(String, ServerName<'static>)>,
+        tui: bool,
     ) -> Self {
         Self {
             has_ipv4: !v4.is_empty(),
@@ -38,6 +40,7 @@ impl HandlerConfig {
             host,
             boost,
             sni_map,
+            tui,
         }
     }
     pub fn next_v4(&self) -> Ipv4Addr {
@@ -75,7 +78,7 @@ where
     }
 }
 
-pub fn read_config(file_name: &str) -> Result<(HostConfig, HandlerConfig)> {
+pub fn read_config(file_name: &str) -> Result<(HostConfig, HandlerConfig, bool)> {
     use std::{fs::File, io::prelude::*};
     let mut buf = String::new();
     let _ = File::open(file_name)?.read_to_string(&mut buf)?;
@@ -96,9 +99,10 @@ mod toml_file {
         ipv6_first: Option<bool>,
         boost: u8,
         sni_map: BTreeMap<String, String>,
+        tui: Option<bool>,
     }
 
-    impl From<Config> for (super::HostConfig, super::HandlerConfig) {
+    impl From<Config> for (super::HostConfig, super::HandlerConfig, bool) {
         fn from(val: Config) -> Self {
             let mut v4 = Vec::new();
             let mut v6 = Vec::new();
@@ -113,6 +117,7 @@ mod toml_file {
                     panic!("{} is not a correct domain", host);
                 }
             }
+            let tui = val.tui.unwrap_or(false);
             (
                 super::HostConfig { host: val.host },
                 super::HandlerConfig::new(
@@ -125,7 +130,9 @@ mod toml_file {
                         .into_iter()
                         .map(|(k, v)| (k, ServerName::try_from(v).unwrap()))
                         .collect(),
+                    tui,
                 ),
+                tui,
             )
         }
     }

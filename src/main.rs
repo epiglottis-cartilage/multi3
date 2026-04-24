@@ -3,20 +3,35 @@ mod config;
 mod error;
 mod handler;
 mod tls;
+mod tracker;
+mod ui;
+
 use error::{Error, Result};
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
     if let Err(e) = main_wrapper().await {
-        log::error!("{}", e);
+        eprintln!("{}", e);
     }
 }
 
 async fn main_wrapper() -> Result<()> {
-    let (host, cfg) = config::read_config("multi3.toml")?;
+    let (host, cfg, tui) = config::read_config("multi3.toml")?;
 
     let cfg = &*Box::leak(Box::new(cfg));
+    let tracker = tracker::Tracker::new();
+
+    if tui {
+        let tracker_clone = tracker.clone();
+        let _ui_handle = tokio::task::spawn_blocking(move || {
+            if let Err(e) = ui::run_ui(tracker_clone) {
+                eprintln!("UI error: {}", e);
+            }
+        });
+    } else {
+        env_logger::init();
+    }
+
     log::info!("Listening on {}", host.host);
     let listener = tokio::net::TcpListener::bind(host.host).await?;
 
@@ -24,6 +39,7 @@ async fn main_wrapper() -> Result<()> {
     loop {
         id += 1;
         let (stream, _) = listener.accept().await?;
-        let _join_handle = tokio::spawn(handler::handle(id, stream, cfg));
+        let tracker = tracker.clone();
+        let _join_handle = tokio::spawn(handler::handle(id, stream, cfg, tracker));
     }
 }

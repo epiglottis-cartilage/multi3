@@ -18,6 +18,8 @@ webpki-roots = { version = "*" }
 rcgen = { version = "*", features = ["x509-parser"] }
 log = "0.4.29"
 env_logger = "0.11.10"
+ratatui = "0.30.0"
+crossterm = "0.29.0"
 
 [profile.release]
 opt-level = 's'
