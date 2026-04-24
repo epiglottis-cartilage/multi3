@@ -13,7 +13,7 @@ const SIZE: usize = 40960;
 
 pub async fn handle(id: u64, local: TcpStream, config: &config::HandlerConfig) {
     if let Err(e) = handle_inner(id, local, config).await {
-        eprintln!("[{id:^5}] {e}");
+        log::error!("[{id:^5}] {e}");
     }
 }
 pub async fn handle_inner(
@@ -21,7 +21,7 @@ pub async fn handle_inner(
     mut local: TcpStream,
     config: &config::HandlerConfig,
 ) -> Result<()> {
-    eprintln!("[{id:^5}] Recv from {}", local.peer_addr().unwrap());
+    log::info!("[{id:^5}] Recv from {}", local.peer_addr().unwrap());
 
     let mut buf = Vec::with_capacity(SIZE);
     unsafe {
@@ -62,7 +62,7 @@ async fn http_resolved(
     config: &config::HandlerConfig,
     (buf, n): (Buffer, usize),
 ) -> Result<()> {
-    eprintln!("[{id:^5}] Http  {addr}");
+    log::info!("[{id:^5}] Http  {addr}");
 
     let hosts = match lookup_host(&addr, config).await {
         Ok(hosts) => hosts,
@@ -75,7 +75,7 @@ async fn http_resolved(
     match connect(id, None, None, hosts, config).await {
         Ok((mut remote, local_addr, peer_addr)) => {
             remote.write_all(&buf[..n]).await?;
-            eprintln!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
+            log::info!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
             tcp_relay(id, tls::Stream::new_direct(local), remote).await?;
         }
         Err(e) => {
@@ -94,7 +94,7 @@ async fn https_resolved(
     config: &config::HandlerConfig,
     (_buf, _n): (Buffer, usize),
 ) -> Result<()> {
-    eprintln!("[{id:^5}] Https {addr}");
+    log::info!("[{id:^5}] Https {addr}");
 
     let hosts = match lookup_host(&addr, config).await {
         Ok(hosts) => hosts,
@@ -110,7 +110,7 @@ async fn https_resolved(
         .iter()
         .filter_map(|(src, dst)| {
             if host_name.ends_with(src) {
-                eprintln!("[{id:^5}] {addr} → {dst:?}");
+                log::info!("[{id:^5}] {addr} → {dst:?}");
                 Some(dst)
             } else {
                 None
@@ -124,10 +124,10 @@ async fn https_resolved(
                 .await?;
             local.flush().await?;
             let local = if matches!(remote, tls::Stream::Tls(_)) {
-                eprintln!("[{id:^5}] {} ⇹ {}", local_addr, peer_addr);
+                log::info!("[{id:^5}] {} ⇹ {}", local_addr, peer_addr);
                 tls::Stream::new_server(local, host_name).await?
             } else {
-                eprintln!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
+            log::info!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
                 tls::Stream::new_direct(local)
             };
             tcp_relay(id, local, remote).await?;
@@ -147,7 +147,7 @@ async fn socks_recv(
     config: &config::HandlerConfig,
     (buf, n): (Buffer, usize),
 ) -> Result<()> {
-    eprintln!("[{id:^5}] Socks5");
+    log::info!("[{id:^5}] Socks5");
     if !buf[2..n].contains(&0x00) {
         let _ = local.write_all(&[0x05, 0xff]).await;
         Err(Error::InvalidRequest(
@@ -186,7 +186,7 @@ async fn socks_tcp_resolved(
     config: &config::HandlerConfig,
     (mut buf, n): (Buffer, usize),
 ) -> Result<()> {
-    eprintln!("[{id:^5}] Tcp -> {addr}");
+    log::info!("[{id:^5}] Tcp -> {addr}");
 
     let hosts = match lookup_host(&addr, config).await {
         Ok(hosts) => hosts,
@@ -200,7 +200,7 @@ async fn socks_tcp_resolved(
         Ok((remote, local_addr, peer_addr)) => {
             let n = build_socks_response(0, local_addr, &mut buf);
             let _ = local.write_all(&buf[..n]).await;
-            eprintln!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
+            log::info!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
             tcp_relay(id, tls::Stream::new_direct(local), remote).await?;
         }
         Err(e) => {
@@ -224,7 +224,7 @@ async fn socks_udp_resolved(
         tokio::net::UdpSocket::bind((config.next_v4(), 0)).await?
     };
     let remote_bind = socket.local_addr().unwrap();
-    eprintln!("[{id:^5}] Udp ← {}", remote_bind);
+    log::info!("[{id:^5}] Udp ← {}", remote_bind);
 
     let n = build_socks_response(0, remote_bind, &mut buf);
     local.write_all(&buf[..n]).await?;
@@ -247,7 +247,7 @@ async fn socks_udp_relay(
         let (n, src) = socket.recv_from(&mut buf).await?;
         if local.is_none() {
             local = Some(src);
-            eprintln!("[{id:^5}] {} ↔︎ ...", src);
+            log::info!("[{id:^5}] {} ↔︎ ...", src);
         }
         let local = local.unwrap();
         if src == local {
@@ -262,13 +262,13 @@ async fn socks_udp_relay(
                 .await?;
         }
     }
-    eprintln!("[{id:^5}] Done");
+    log::info!("[{id:^5}] Done");
     Ok(())
 }
 
 async fn tcp_relay(id: u64, mut local: tls::Stream, mut remote: tls::Stream) -> Result<()> {
     tokio::io::copy_bidirectional_with_sizes(&mut local, &mut remote, SIZE, SIZE).await?;
-    eprintln!("[{id:^5}] Done",);
+    log::info!("[{id:^5}] Done");
     Ok(())
 }
 fn build_socks_response(cmd: u8, addr: SocketAddr, buf: &mut Buffer) -> usize {
@@ -432,13 +432,13 @@ async fn connect(
                     if cfg!(debug_assertions) {
                         tokio::spawn((async move || {
                             let _ = futures.join_all();
-                            eprintln!("[{id:^5}] save {}ms", start.elapsed().as_millis_f32());
+                            log::debug!("[{id:^5}] save {}ms", start.elapsed().as_millis_f32());
                         })());
                     }
                     return Ok(x);
                 }
                 Ok(Err(e)) => {
-                    eprintln!("[{id:^5}] ⫤ {} fail {}", host_name, e);
+                    log::warn!("[{id:^5}] ⫤ {} fail {}", host_name, e);
                 }
                 Err(e) => {
                     unreachable!("Join Error {}", e);

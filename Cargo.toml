@@ -16,6 +16,8 @@ time = { version = "*" }
 tokio-rustls = { version = "*" }
 webpki-roots = { version = "*" }
 rcgen = { version = "*", features = ["x509-parser"] }
+log = "0.4.29"
+env_logger = "0.11.10"
 
 [profile.release]
 opt-level = 's'
