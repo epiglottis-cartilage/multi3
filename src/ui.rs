@@ -2,10 +2,10 @@ use std::{io, time::Duration};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
+    DefaultTerminal, Frame,
     layout::Constraint,
     style::{Color, Style},
     widgets::{Block, Cell, Row, Table, TableState},
-    DefaultTerminal, Frame,
 };
 
 use crate::tracker::{ConnectionStatus, Protocol, Tracker};
@@ -42,10 +42,11 @@ fn run_app(terminal: &mut DefaultTerminal, tracker: Tracker) -> io::Result<()> {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
+                        KeyCode::Char('q') | KeyCode::Char('Q') => return Ok(()),
                         KeyCode::Down => {
-                            let conns = tracker.get_connections();
+                            let conns = tracker.with_connections(|conns| conns.len());
                             let i = table_state.selected().unwrap_or(0);
-                            if i + 1 < conns.len() {
+                            if i + 1 < conns {
                                 table_state.select(Some(i + 1));
                             }
                         }
@@ -66,8 +67,6 @@ fn run_app(terminal: &mut DefaultTerminal, tracker: Tracker) -> io::Result<()> {
 fn draw(frame: &mut Frame, tracker: &Tracker, table_state: &mut TableState) {
     use std::sync::atomic::Ordering;
 
-    let connections = tracker.get_connections();
-
     let header = Row::new(vec![
         Cell::from("Up Time").style(Style::default().fg(Color::Yellow).bold()),
         Cell::from("Upload").style(Style::default().fg(Color::Yellow).bold()),
@@ -77,61 +76,67 @@ fn draw(frame: &mut Frame, tracker: &Tracker, table_state: &mut TableState) {
         Cell::from("Details").style(Style::default().fg(Color::Yellow).bold()),
     ]);
 
-    let rows: Vec<Row> = connections
-        .iter()
-        .map(|conn| {
-            let up_time = conn.start_time.elapsed().as_secs();
-            let upload = conn.upload_bytes.load(Ordering::Relaxed);
-            let download = conn.download_bytes.load(Ordering::Relaxed);
+    tracker.clean_connections();
+    let rows: Vec<Row> = tracker.with_connections(|connections| {
+        connections
+            .iter()
+            .map(|conn| {
+                let up_time = conn.start_time.elapsed().as_secs();
+                let upload = conn.upload_bytes.load(Ordering::Relaxed);
+                let download = conn.download_bytes.load(Ordering::Relaxed);
 
-            let status_text = match conn.status {
-                ConnectionStatus::Waiting => "Waiting",
-                ConnectionStatus::Connected => "Connected",
-                ConnectionStatus::CompletedError => "Error",
-                ConnectionStatus::CompletedNormal => "Done",
-            };
-            let status_color = match conn.status {
-                ConnectionStatus::Waiting => Color::Yellow,
-                ConnectionStatus::Connected => Color::Cyan,
-                ConnectionStatus::CompletedError => Color::Red,
-                ConnectionStatus::CompletedNormal => Color::Green,
-            };
+                let status_text = match conn.status {
+                    ConnectionStatus::Waiting => "Waiting",
+                    ConnectionStatus::Connected => "Connected",
+                    ConnectionStatus::CompletedError => "Error",
+                    ConnectionStatus::CompletedNormal => "Done",
+                };
+                let status_color = match conn.status {
+                    ConnectionStatus::Waiting => Color::Yellow,
+                    ConnectionStatus::Connected => Color::Cyan,
+                    ConnectionStatus::CompletedError => Color::Red,
+                    ConnectionStatus::CompletedNormal => Color::Green,
+                };
 
-            let protocol_str = match conn.protocol {
-                Protocol::Http => "HTTP",
-                Protocol::Https => "HTTPS",
-                Protocol::Socks5Tcp => "SOCKS5/TCP",
-                Protocol::Socks5Udp => "SOCKS5/UDP",
-            };
+                let protocol_str = match conn.protocol {
+                    Protocol::Http => "HTTP",
+                    Protocol::Https => "HTTPS",
+                    Protocol::Socks5Tcp => "SOCKS5/TCP",
+                    Protocol::Socks5Udp => "SOCKS5/UDP",
+                };
 
-            let connection_str = format!("{} → {} [{}]", conn.local_addr, conn.remote_uri, protocol_str);
+                let connection_str = format!(
+                    "{} → {} [{}]",
+                    conn.local_addr, conn.remote_uri, protocol_str
+                );
 
-            let mut details = String::new();
-            for _ in 0..conn.retries.len() {
-                details.push('🔁');
-            }
-            if let Some(ref err) = conn.error_details {
-                if !details.is_empty() {
-                    details.push(' ');
+                let mut details = String::new();
+                for _ in 0..conn.retries.len() {
+                    details.push('🔁');
                 }
-                details.push_str(err);
-            } else if !conn.retries.is_empty() {
-                if !details.is_empty() {
-                    details.push(' ');
+                if let Some(ref err) = conn.error_details {
+                    if !details.is_empty() {
+                        details.push(' ');
+                    }
+                    details.push_str(err);
+                } else if !conn.retries.is_empty() {
+                    if !details.is_empty() {
+                        details.push(' ');
+                    }
+                    details.push_str(conn.retries.last().unwrap());
                 }
-                details.push_str(conn.retries.last().unwrap());
-            }
 
-            Row::new(vec![
-                Cell::from(format!("{}s", up_time)),
-                Cell::from(format_bytes(upload)),
-                Cell::from(format_bytes(download)),
-                Cell::from(status_text).style(Style::default().fg(status_color)),
-                Cell::from(connection_str),
-                Cell::from(details),
-            ])
-        })
-        .collect();
+                Row::new(vec![
+                    Cell::from(format!("{}s", up_time)),
+                    Cell::from(format_bytes(upload)),
+                    Cell::from(format_bytes(download)),
+                    Cell::from(status_text).style(Style::default().fg(status_color)),
+                    Cell::from(connection_str),
+                    Cell::from(details),
+                ])
+            })
+            .collect()
+    });
 
     let table = Table::new(
         rows,
@@ -147,7 +152,7 @@ fn draw(frame: &mut Frame, tracker: &Tracker, table_state: &mut TableState) {
     .header(header)
     .block(Block::default())
     .row_highlight_style(Style::default().bg(Color::DarkGray))
-    .highlight_symbol("> ");
+    .highlight_symbol("");
 
     frame.render_stateful_widget(table, frame.area(), table_state);
 }

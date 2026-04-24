@@ -27,6 +27,7 @@ async fn main_wrapper() -> Result<()> {
             if let Err(e) = ui::run_ui(tracker_clone) {
                 eprintln!("UI error: {}", e);
             }
+            std::process::exit(0);
         });
     } else {
         env_logger::init();

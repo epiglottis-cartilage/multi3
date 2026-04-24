@@ -73,7 +73,7 @@ pub async fn handle(id: u64, local: TcpStream, config: &config::HandlerConfig, t
         Err(_) => return,
     };
     log::info!("[{id:^5}] Recv from {}", peer_addr);
-    tracker.add(id, String::new(), String::new(), Protocol::Http);
+    tracker.add(id, String::from(" - "), String::from(" - "), Protocol::Http);
 
     match handle_inner(id, local, config, &tracker).await {
         Ok(()) => {
@@ -152,7 +152,7 @@ async fn http_resolved(
         Ok((mut remote, local_addr, peer_addr)) => {
             remote.write_all(&buf[..n]).await?;
             tracker.set_connected(id);
-            log::info!("[{id:^5}] {} \u{2194}\u{fe0e} {}", local_addr, peer_addr);
+            log::info!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
             tcp_relay(id, tls::Stream::new_direct(local), remote, tracker).await?;
             Ok(())
         }
@@ -189,7 +189,7 @@ async fn https_resolved(
         .iter()
         .filter_map(|(src, dst)| {
             if host_name.ends_with(src) {
-                log::info!("[{id:^5}] {addr} \u{2192} {dst:?}");
+                log::info!("[{id:^5}] {addr} → {dst:?}");
                 Some(dst)
             } else {
                 None
@@ -204,10 +204,10 @@ async fn https_resolved(
             local.flush().await?;
             tracker.set_connected(id);
             let local = if matches!(remote, tls::Stream::Tls(_)) {
-                log::info!("[{id:^5}] {} \u{21f9} {}", local_addr, peer_addr);
+                log::info!("[{id:^5}] {} ⇹ {}", local_addr, peer_addr);
                 tls::Stream::new_server(local, host_name).await?
             } else {
-                log::info!("[{id:^5}] {} \u{2194}\u{fe0e} {}", local_addr, peer_addr);
+                log::info!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
                 tls::Stream::new_direct(local)
             };
             tcp_relay(id, local, remote, tracker).await?;
@@ -287,7 +287,7 @@ async fn socks_tcp_resolved(
             let n = build_socks_response(0, local_addr, &mut buf);
             let _ = local.write_all(&buf[..n]).await;
             tracker.set_connected(id);
-            log::info!("[{id:^5}] {} \u{2194}\u{fe0e} {}", local_addr, peer_addr);
+            log::info!("[{id:^5}] {} ↔︎ {}", local_addr, peer_addr);
             tcp_relay(id, tls::Stream::new_direct(local), remote, tracker).await?;
             Ok(())
         }
@@ -314,7 +314,7 @@ async fn socks_udp_resolved(
     };
     let remote_bind = socket.local_addr().unwrap();
     tracker.update_local_addr(id, remote_bind.ip().to_string());
-    log::info!("[{id:^5}] Udp \u{2190} {}", remote_bind);
+    log::info!("[{id:^5}] Udp ← {}", remote_bind);
 
     let n = build_socks_response(0, remote_bind, &mut buf);
     local.write_all(&buf[..n]).await?;
@@ -332,13 +332,13 @@ async fn socks_udp_relay(
     let ctl = ctl.into_std().unwrap();
     tracker.set_connected(id);
 
-    let conns = tracker.get_connections();
-    let conn = conns.iter().find(|c| c.id == id);
-    let (upload_atomic, download_atomic) = if let Some(conn) = conn {
-        (conn.upload_bytes.clone(), conn.download_bytes.clone())
-    } else {
-        (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)))
-    };
+    let (upload, download) = tracker.with_connections(|connections| {
+        connections
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| (c.upload_bytes.clone(), c.download_bytes.clone()))
+            .unwrap()
+    });
 
     loop {
         match ctl.peek(&mut [0]) {
@@ -348,7 +348,7 @@ async fn socks_udp_relay(
         let (n, src) = socket.recv_from(&mut buf).await?;
         if local.is_none() {
             local = Some(src);
-            log::info!("[{id:^5}] {} \u{2194}\u{fe0e} ...", src);
+            log::info!("[{id:^5}] {} ↔ ...", src);
         }
         let local = local.unwrap();
         if src == local {
@@ -357,12 +357,12 @@ async fn socks_udp_relay(
             }
             let (addr, d) = socks_prase_host(&buf[3..n]).unwrap();
             let sent = socket.send_to(&buf[d..n], &addr).await?;
-            upload_atomic.fetch_add(sent as u64, Ordering::Relaxed);
+            upload.fetch_add(sent as u64, Ordering::Relaxed);
         } else {
             let sent = socket
                 .send_to(&build_socks_udp(src, &buf[..n]), local)
                 .await?;
-            download_atomic.fetch_add(sent as u64, Ordering::Relaxed);
+            download.fetch_add(sent as u64, Ordering::Relaxed);
         }
     }
     log::info!("[{id:^5}] Done");
@@ -375,13 +375,13 @@ async fn tcp_relay(
     remote: tls::Stream,
     tracker: &Tracker,
 ) -> Result<()> {
-    let conns = tracker.get_connections();
-    let conn = conns.iter().find(|c| c.id == id);
-    let (upload, download) = if let Some(conn) = conn {
-        (conn.upload_bytes.clone(), conn.download_bytes.clone())
-    } else {
-        (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)))
-    };
+    let (upload, download) = tracker.with_connections(|connections| {
+        connections
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| (c.upload_bytes.clone(), c.download_bytes.clone()))
+            .unwrap()
+    });
 
     let mut remote = ByteCounter {
         inner: remote,
@@ -565,13 +565,15 @@ async fn connect(
                             let _ = futures.join_all();
                             log::debug!("[{id:^5}] save {}ms", start.elapsed().as_millis_f32());
                         })());
+                    } else {
+                        futures.abort_all();
                     }
                     tracker.update_local_addr(id, local_addr.ip().to_string());
                     return Ok((remote, local_addr, peer_addr));
                 }
                 Ok(Err(e)) => {
                     tracker.add_retry(id, format!("{} fail {}", host_name, e));
-                    log::warn!("[{id:^5}] \u{2ae4} {} fail {}", host_name, e);
+                    log::warn!("[{id:^5}] ⫤ {} fail {}", host_name, e);
                 }
                 Err(e) => {
                     unreachable!("Join Error {}", e);
